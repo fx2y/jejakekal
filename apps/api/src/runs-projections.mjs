@@ -114,10 +114,10 @@ export async function getRunProjection(client, workflowId) {
 }
 
 /**
- * Compatibility projection for pre-C2 `/api/timeline/*` payloads.
+ * Bundle/export timeline projection.
  * @param {Array<ReturnType<typeof mapOperationOutputRow>>} rows
  */
-export function toLegacyTimeline(rows) {
+export function toBundleTimeline(rows) {
   return rows.map((row) => ({
     index: row.function_id,
     step: row.function_name,
@@ -126,4 +126,3 @@ export function toLegacyTimeline(rows) {
     output: row.error ? undefined : (row.output ?? {})
   }));
 }
-

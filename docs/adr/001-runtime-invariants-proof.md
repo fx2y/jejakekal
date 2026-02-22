@@ -14,7 +14,7 @@ Spec-0 encoded many local decisions; risk is drift + tribal memory. This ADR com
 ## Decision (normative)
 1. Build/test command graph SoT is `.mise.toml`; host prerequisites are only `mise` + container runtime.
 2. CI/local parity is strict: GitHub Action runs only `mise run ci`; any new quality gate must be included there.
-3. Workflow runtime is DBOS-shaped minimal engine (checkpoint + replay + idempotent effects) behind adapter boundary (`apps/api/src/workflow.mjs`) for future SDK swap.
+3. Workflow runtime uses DBOS SDK as source of truth (`dbos.workflow_status` + `dbos.operation_outputs`) behind adapter boundary (`apps/api/src/workflow.mjs`).
 4. External side effects must go through `callIdempotentEffect(effectKey, ...)`; raw effect calls are forbidden.
 5. Workflow tests affecting behavior must freeze `Date.now` + `Math.random`.
 6. Regression review unit is run-bundle/golden artifact diff; avoid opaque-only assertions.
@@ -28,14 +28,14 @@ Spec-0 encoded many local decisions; risk is drift + tribal memory. This ADR com
 ## Model (compressed architecture)
 ```text
 Inputs -> Workflow Engine -> Deterministic Pipeline -> Run Bundle -> Golden/Review
-            | checkpoints           | raw/docir/chunks/memo      |
+            | dbos status+steps     | raw/docir/chunks/memo      |
             | replay                | canonical JSON             +-> UI planes(state IDs)
             | idempotent effects    |                            +-> Perf gates
             +-> Sandbox executor (RO + explicit export + hash-stable)
 
 Gate graph:
 verify = lint + typecheck + unit + workflow
-ci = verify + workflow/system gates + ui:e2e + bench:check (+ others in .mise.toml)
+ci = verify + workflow/system gates + bench:check (+ others in .mise.toml)
 CI action: ONLY `mise run ci`
 ```
 
@@ -43,7 +43,7 @@ CI action: ONLY `mise run ci`
 ### 1) Replay + exactly-once effect
 ```js
 await callIdempotentEffect(`send-email:${workflowId}:${stepId}`, async () => sendEmail(payload));
-// crash after checkpoint write, before next step
+// crash after durable step write, before next step
 // rerun same workflowId => resumes at next unfinished step; email not resent
 ```
 
@@ -108,7 +108,7 @@ E2E asserts transitions, e.g. `idle -> running -> completed|failed`, using stabl
 4. If new failure mode: add fix recipe in `.codex/rules/*`.
 
 ## Non-goals
-- Not a full DBOS SDK adoption plan.
+- Not a DBOS-replacement plan.
 - Not UX/style guidance.
 - Not replacing existing AGENTS policy; this ADR is subordinate implementation architecture.
 

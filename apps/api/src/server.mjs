@@ -5,8 +5,27 @@ import { join } from 'node:path';
 import { applySchema, makeClient } from './db.mjs';
 import { ensureDbosRuntime, shutdownDbosRuntime } from './dbos-runtime.mjs';
 import { closeServer, listenLocal, sendJson } from './http.mjs';
-import { handleLegacyApiRoute } from './legacy-api-routes.mjs';
 import { handleRunsRoute } from './runs-routes.mjs';
+import { handleSystemRoute } from './system-routes.mjs';
+
+function onceAsync(fn) {
+  let done = false;
+  /** @type {Promise<void> | null} */
+  let inFlight = null;
+  return async () => {
+    if (done) return;
+    if (inFlight) {
+      await inFlight;
+      return;
+    }
+    inFlight = Promise.resolve()
+      .then(() => fn())
+      .finally(() => {
+        done = true;
+      });
+    await inFlight;
+  };
+}
 
 /**
  * @param {number} port
@@ -28,7 +47,7 @@ export async function startApiServer(port = 4010) {
 
       const handled =
         (await handleRunsRoute(req, res, { client, bundlesRoot })) ||
-        (await handleLegacyApiRoute(req, res, { client, bundlesRoot }));
+        (await handleSystemRoute(req, res, { client }));
       if (handled) {
         return;
       }
@@ -40,20 +59,37 @@ export async function startApiServer(port = 4010) {
   });
 
   const boundPort = await listenLocal(server, port);
+  const close = onceAsync(async () => {
+    await closeServer(server);
+    await shutdownDbosRuntime();
+    await client.end();
+  });
 
   return {
     port: boundPort,
-    close: async () => {
-      await closeServer(server);
-      await shutdownDbosRuntime();
-      await client.end();
-    }
+    close
   };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.API_PORT ?? '4010');
-  startApiServer(port).then(() => {
-    process.stdout.write(`api listening on ${port}\n`);
-  });
+  startApiServer(port)
+    .then((api) => {
+      process.stdout.write(`api listening on ${api.port}\n`);
+      const handleSignal = async (signal) => {
+        process.stdout.write(`api shutdown (${signal})\n`);
+        await api.close();
+        process.exit(0);
+      };
+      process.once('SIGINT', () => {
+        void handleSignal('SIGINT');
+      });
+      process.once('SIGTERM', () => {
+        void handleSignal('SIGTERM');
+      });
+    })
+    .catch((error) => {
+      process.stderr.write(`${String(error)}\n`);
+      process.exitCode = 1;
+    });
 }

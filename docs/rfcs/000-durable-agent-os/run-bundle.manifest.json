@@ -1,16 +1,36 @@
 {
-  "schemaVersion": 1,
-  "runId": "run_01H...",
-  "workflow": "ingest_local",
-  "createdAt": "1970-01-01T00:00:00.000Z",
-  "inputHash": "sha256:...",
-  "outputHash": "sha256:...",
-  "timeline": [
-    {"seq":1,"step":"store_raw","inHash":"sha256:...","outHash":"sha256:..."}
+  "manifest.json": {
+    "workflowId": "wf_01H...",
+    "createdAt": "1970-01-01T00:00:00.000Z",
+    "schemaVersion": "run-bundle-v0",
+    "locale": "C",
+    "timezone": "UTC",
+    "root": "<run-bundle-root>"
+  },
+  "timeline.json": [
+    { "index": 0, "step": "prepare", "phase": "completed", "payload": { "source": "..." } },
+    { "index": 1, "step": "DBOS.sleep", "phase": "completed", "payload": {} },
+    { "index": 2, "step": "side-effect", "phase": "completed", "payload": { "sent": true } },
+    { "index": 3, "step": "finalize", "phase": "completed", "payload": { "ok": true } }
   ],
-  "artifacts": [
-    {"type":"memo.md","path":"artifacts/memo.md","sha256":"sha256:..."}
+  "tool-io.json": [
+    { "tool": "pipeline.ingest", "workflowId": "wf_01H..." }
   ],
-  "toolIO": [],
-  "citations": []
+  "artifacts.json": [
+    { "id": "raw", "path": "..." },
+    { "id": "docir", "path": "..." },
+    { "id": "chunk-index", "path": "..." },
+    { "id": "memo", "path": "..." }
+  ],
+  "citations.json": [
+    { "source": "local", "confidence": 1, "text": "..." }
+  ],
+  "workflow_status.json": {
+    "workflow_uuid": "wf_01H...",
+    "status": "SUCCESS",
+    "name": "defaultWorkflow"
+  },
+  "operation_outputs.json": [
+    { "workflow_uuid": "wf_01H...", "function_id": 0, "function_name": "prepare", "output": { "source": "..." } }
+  ]
 }

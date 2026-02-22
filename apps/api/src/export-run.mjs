@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { ingestDocument } from '../../../packages/pipeline/src/ingest.mjs';
 import { makeManifest, writeRunBundle } from '../../../packages/core/src/run-bundle.mjs';
 import { readRun } from './runs-service.mjs';
-import { toLegacyTimeline } from './runs-projections.mjs';
+import { toBundleTimeline } from './runs-projections.mjs';
 
 function trimPreview(source) {
   return source.replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -56,7 +56,7 @@ export async function exportRunBundle(params) {
 
   const bundleDir = join(params.bundlesRoot, params.runId, 'bundle');
   const artifacts = buildIngestArtifacts(ingest);
-  const legacyTimeline = toLegacyTimeline(run.timeline);
+  const bundleTimeline = toBundleTimeline(run.timeline);
   const manifest = makeManifest({
     workflowId: params.runId,
     root: '<run-bundle-root>'
@@ -64,7 +64,7 @@ export async function exportRunBundle(params) {
 
   await writeRunBundle(bundleDir, {
     manifest,
-    timeline: legacyTimeline,
+    timeline: bundleTimeline,
     toolIO: [{ tool: 'pipeline.ingest', workflowId: params.runId }],
     artifacts,
     citations: [{ source: 'local', confidence: 1, text: trimPreview(source) }],

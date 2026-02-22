@@ -34,6 +34,7 @@ run = [
   "mise run test:sandbox",
   "mise run chaos:sandbox",
   "mise run golden:diff",
+  "mise run ui:e2e",
   "mise run bench:check"
 ]
 

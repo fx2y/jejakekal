@@ -3,6 +3,25 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startApiServer } from '../../api/src/server.mjs';
 
+function onceAsync(fn) {
+  let done = false;
+  /** @type {Promise<void> | null} */
+  let inFlight = null;
+  return async () => {
+    if (done) return;
+    if (inFlight) {
+      await inFlight;
+      return;
+    }
+    inFlight = Promise.resolve()
+      .then(() => fn())
+      .finally(() => {
+        done = true;
+      });
+    await inFlight;
+  };
+}
+
 /**
  * @param {number} uiPort
  */
@@ -42,21 +61,22 @@ export async function startUiServer(uiPort = 4110) {
   await new Promise((resolve) => {
     server.listen(uiPort, '127.0.0.1', () => resolve(undefined));
   });
+  const close = onceAsync(async () => {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(undefined);
+      });
+    });
+    await api.close();
+  });
 
   return {
     uiPort,
-    close: async () => {
-      await new Promise((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve(undefined);
-        });
-      });
-      await api.close();
-    }
+    close
   };
 }
 
@@ -89,7 +109,7 @@ function resolveStaticFile(url) {
  * @param {string} url
  */
 function shouldProxy(url) {
-  return url.startsWith('/api/') || url.startsWith('/runs') || url === '/healthz';
+  return url.startsWith('/runs') || url === '/healthz';
 }
 
 /**
@@ -103,7 +123,23 @@ function contentTypeFor(file) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.UI_PORT ?? '4110');
-  startUiServer(port).then(() => {
-    process.stdout.write(`ui listening on ${port}\n`);
-  });
+  startUiServer(port)
+    .then((ui) => {
+      process.stdout.write(`ui listening on ${ui.uiPort}\n`);
+      const handleSignal = async (signal) => {
+        process.stdout.write(`ui shutdown (${signal})\n`);
+        await ui.close();
+        process.exit(0);
+      };
+      process.once('SIGINT', () => {
+        void handleSignal('SIGINT');
+      });
+      process.once('SIGTERM', () => {
+        void handleSignal('SIGTERM');
+      });
+    })
+    .catch((error) => {
+      process.stderr.write(`${String(error)}\n`);
+      process.exitCode = 1;
+    });
 }

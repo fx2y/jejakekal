@@ -3,17 +3,17 @@ import { startDefaultWorkflowRun } from './dbos-workflows.mjs';
 import {
   getRunHeader as readWorkflowStatus,
   getRunSteps as readOperationOutputs,
-  toLegacyTimeline
+  toBundleTimeline
 } from './runs-projections.mjs';
 
 /**
- * Compatibility projection for pre-C2 `/api/timeline/*` payloads.
+ * Projection used by workflow facade/tests that expect step/phase rows.
  * @param {import('pg').Client} client
  * @param {string} workflowId
  */
 export async function readTimeline(client, workflowId) {
   const rows = await readOperationOutputs(client, workflowId);
-  return toLegacyTimeline(rows);
+  return toBundleTimeline(rows);
 }
 
 /**
