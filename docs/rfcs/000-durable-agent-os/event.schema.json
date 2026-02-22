@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StepEvent",
+  "type": "object",
+  "required": [
+    "runId","seq","step","type","status","inHash","outHash","startedAt"
+  ],
+  "properties": {
+    "runId": {"type": "string"},
+    "seq": {"type": "integer", "minimum": 1},
+    "step": {"type": "string"},
+    "type": {"enum": ["TX_STEP","EXT_STEP","CPU_STEP","SANDBOX_STEP"]},
+    "status": {"enum": ["running","ok","error","retrying","skipped"]},
+    "inHash": {"type": "string"},
+    "outHash": {"type": "string"},
+    "retry": {"type": "integer", "minimum": 0},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "endedAt": {"type": "string", "format": "date-time"},
+    "meta": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}

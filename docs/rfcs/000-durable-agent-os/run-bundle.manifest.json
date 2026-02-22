@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "runId": "run_01H...",
+  "workflow": "ingest_local",
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "inputHash": "sha256:...",
+  "outputHash": "sha256:...",
+  "timeline": [
+    {"seq":1,"step":"store_raw","inHash":"sha256:...","outHash":"sha256:..."}
+  ],
+  "artifacts": [
+    {"type":"memo.md","path":"artifacts/memo.md","sha256":"sha256:..."}
+  ],
+  "toolIO": [],
+  "citations": []
+}

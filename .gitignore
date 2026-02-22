@@ -13,10 +13,11 @@ golden/generated/
 spec-0/unrelated.tmp
 
 .tmp/
+AGENTS.local.md
 
 # Spec filtering (intentional project structure)
 spec-*/
 !spec-0/
 spec-0/*
-!spec-0/01*
+!spec-0/00*
 !spec-0/00-learnings.jsonl
