@@ -1,5 +1,5 @@
 /**
- * @param {{workflowId: string, source: string}} params
+ * @param {{workflowId?: string, source: string}} params
  */
 export async function startRun(params) {
   const response = await fetch('/api/run', {

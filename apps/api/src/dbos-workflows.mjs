@@ -3,7 +3,7 @@ import { makeClient } from './db.mjs';
 import { callIdempotentEffect } from './effects.mjs';
 
 let workflowsRegistered = false;
-/** @type {((input: { value: string }) => Promise<unknown>) | undefined} */
+/** @type {((input: { value: string, sleepMs?: number }) => Promise<unknown>) | undefined} */
 let defaultWorkflowFn;
 
 async function withAppClient(run) {
@@ -37,7 +37,7 @@ async function finalizeStep() {
 
 async function defaultWorkflowImpl(input) {
   await DBOS.runStep(async () => prepareStep(input.value), { name: 'prepare' });
-  await DBOS.sleep(1);
+  await DBOS.sleep(Math.max(1, Number(input.sleepMs ?? 1)));
   const sideEffect = await DBOS.runStep(sideEffectStep, { name: 'side-effect' });
   const finalize = await DBOS.runStep(finalizeStep, { name: 'finalize' });
   return { workflowId: DBOS.workflowID, sideEffect, finalize };
@@ -52,17 +52,19 @@ export function registerDbosWorkflows() {
 }
 
 /**
- * @param {{workflowId?: string, value: string}} params
+ * @param {{workflowId?: string, value: string, sleepMs?: number}} params
  */
 export async function startDefaultWorkflowRun(params) {
   registerDbosWorkflows();
-  const workflowFn = /** @type {(input: { value: string }) => Promise<unknown>} */ (defaultWorkflowFn);
+  const workflowFn =
+    /** @type {(input: { value: string, sleepMs?: number }) => Promise<unknown>} */ (defaultWorkflowFn);
   try {
     return await DBOS.startWorkflow(
       workflowFn,
       params.workflowId ? { workflowID: params.workflowId } : undefined
     )({
-      value: params.value
+      value: params.value,
+      sleepMs: params.sleepMs
     });
   } catch (error) {
     if (params.workflowId && error instanceof DBOSWorkflowConflictError) {

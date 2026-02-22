@@ -6,6 +6,7 @@ import { applySchema, makeClient } from './db.mjs';
 import { ensureDbosRuntime, shutdownDbosRuntime } from './dbos-runtime.mjs';
 import { closeServer, listenLocal, sendJson } from './http.mjs';
 import { handleLegacyApiRoute } from './legacy-api-routes.mjs';
+import { handleRunsRoute } from './runs-routes.mjs';
 
 /**
  * @param {number} port
@@ -25,7 +26,9 @@ export async function startApiServer(port = 4010) {
         return;
       }
 
-      const handled = await handleLegacyApiRoute(req, res, { client, bundlesRoot });
+      const handled =
+        (await handleRunsRoute(req, res, { client })) ||
+        (await handleLegacyApiRoute(req, res, { client, bundlesRoot }));
       if (handled) {
         return;
       }
@@ -36,10 +39,10 @@ export async function startApiServer(port = 4010) {
     }
   });
 
-  await listenLocal(server, port);
+  const boundPort = await listenLocal(server, port);
 
   return {
-    port,
+    port: boundPort,
     close: async () => {
       await closeServer(server);
       await shutdownDbosRuntime();

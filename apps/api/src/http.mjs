@@ -46,6 +46,11 @@ export async function listenLocal(server, port) {
   await new Promise((resolve) => {
     server.listen(port, '127.0.0.1', () => resolve(undefined));
   });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('server-address-unavailable');
+  }
+  return address.port;
 }
 
 /**

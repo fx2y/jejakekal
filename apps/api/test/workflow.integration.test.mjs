@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { shutdownDbosRuntime } from '../src/dbos-runtime.mjs';
+import { startApiServer } from '../src/server.mjs';
+import { mapOperationOutputRow, mapWorkflowStatusRow } from '../src/runs-projections.mjs';
 import { defaultWorkflow, readOperationOutputs, readWorkflowStatus } from '../src/workflow.mjs';
 import { setupDbOrSkip } from './helpers.mjs';
 import { freezeDeterminism } from '../../../packages/core/src/determinism.mjs';
@@ -33,4 +35,83 @@ test('C1 smoke: DBOS run writes dbos.workflow_status + dbos.operation_outputs', 
     [...outputs.map((row) => row.function_id)].sort((a, b) => a - b)
   );
   assert.ok(outputs.every((row) => row.function_id >= 0));
+});
+
+test('C2 projection mappers normalize DBOS row shapes deterministically', () => {
+  const header = mapWorkflowStatusRow({
+    workflow_uuid: 'rid-1',
+    status: 'SUCCESS',
+    name: 'defaultWorkflow',
+    created_at: '2026-02-22T00:00:00.000Z',
+    updated_at: '2026-02-22T00:00:01.000Z',
+    recovery_attempts: '2',
+    executor_id: 'exec-1'
+  });
+  assert.equal(header.workflow_uuid, 'rid-1');
+  assert.equal(header.recovery_attempts, 2);
+
+  const step = mapOperationOutputRow({
+    workflow_uuid: 'rid-1',
+    function_id: '3',
+    function_name: 'finalize',
+    started_at_epoch_ms: '100',
+    completed_at_epoch_ms: '200',
+    output: JSON.stringify({ json: { ok: true } }),
+    error: null
+  });
+  assert.equal(step.function_id, 3);
+  assert.equal(step.started_at_epoch_ms, 100);
+  assert.deepEqual(step.output, { ok: true });
+});
+
+test('C2 canonical /runs is durable-start async and GET /runs/:id projects ordered timeline', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  t.after(() => unfreeze());
+
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'c2-http', sleepMs: 500 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  assert.equal(typeof started.run_id, 'string');
+  assert.ok(started.run_id.length > 0);
+  assert.ok(!started.run_id.startsWith('wf-'));
+
+  const firstGet = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}`);
+  assert.equal(firstGet.status, 200);
+  const firstRun = await firstGet.json();
+  assert.equal(firstRun.run_id, started.run_id);
+  assert.notEqual(firstRun.status, 'done');
+  assert.notEqual(firstRun.dbos_status, 'SUCCESS');
+
+  let run = firstRun;
+  for (let i = 0; i < 80 && run.status !== 'done'; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const pollRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}`);
+    assert.equal(pollRes.status, 200);
+    run = await pollRes.json();
+  }
+
+  assert.equal(run.status, 'done');
+  assert.equal(run.dbos_status, 'SUCCESS');
+  assert.equal(run.header.workflow_uuid, started.run_id);
+  assert.ok(Array.isArray(run.timeline));
+  assert.ok(run.timeline.length >= 3);
+  assert.deepEqual(
+    run.timeline.map((row) => row.function_id),
+    [...run.timeline.map((row) => row.function_id)].sort((a, b) => a - b)
+  );
+  assert.ok(run.timeline.some((row) => row.function_name === 'prepare'));
+  assert.ok(run.timeline.some((row) => row.function_name === 'side-effect'));
+  assert.ok(run.timeline.some((row) => row.function_name === 'finalize'));
 });

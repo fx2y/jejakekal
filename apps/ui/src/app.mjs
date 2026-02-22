@@ -17,12 +17,11 @@ async function runWorkflow() {
   const ui = requireUiElements();
 
   setRunStatus(ui.status, 'running', 'running');
-  const workflowId = `wf-${Date.now()}`;
-  const result = await startRun({ workflowId, source: ui.inputEl.value });
+  const result = await startRun({ source: ui.inputEl.value });
 
   renderTimeline(ui.timelineEl, result.timeline);
   renderArtifacts(ui.artifactsEl, result.artifacts);
-  setRunStatus(ui.status, 'done', `done:${workflowId}`);
+  setRunStatus(ui.status, 'done', `done:${result.workflowId}`);
 }
 
 document.getElementById('run-workflow')?.addEventListener('click', () => {
