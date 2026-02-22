@@ -1,50 +1,104 @@
-import { exportRun, pollRun, startRun } from './api-client.mjs';
-import { renderArtifacts, renderTimeline, setRunStatus } from './render-execution.mjs';
-
-const status = /** @type {HTMLElement|null} */ (document.getElementById('run-status'));
-const timelineEl = /** @type {HTMLElement|null} */ (document.getElementById('timeline'));
-const artifactsEl = /** @type {HTMLElement|null} */ (document.getElementById('artifacts'));
-const inputEl = /** @type {HTMLTextAreaElement|null} */ (document.getElementById('doc-input'));
-
-function readOptionalSleepMsFromUrl() {
-  const raw = new URL(window.location.href).searchParams.get('sleepMs');
-  if (!raw) return undefined;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return undefined;
-  return Math.max(1, Math.floor(parsed));
+/**
+ * @param {string} html
+ */
+function parseHtml(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  return tpl.content;
 }
 
-function requireUiElements() {
-  if (!status || !timelineEl || !artifactsEl || !inputEl) {
-    throw new Error('ui-elements-missing');
-  }
-  return { status, timelineEl, artifactsEl, inputEl };
+/**
+ * @param {ParentNode} root
+ * @param {string} selector
+ */
+function replaceById(root, selector) {
+  const incoming = root.querySelector(selector);
+  const current = document.querySelector(selector);
+  if (!incoming || !current) return;
+  current.replaceWith(incoming);
 }
 
-async function runWorkflow() {
-  const ui = requireUiElements();
-  const sleepMs = readOptionalSleepMsFromUrl();
-
-  setRunStatus(ui.status, 'running', 'running');
-  const started = await startRun({ source: ui.inputEl.value, sleepMs });
-  const run = await pollRun(started.run_id);
-  if (run.status === 'unknown') {
-    throw new Error(`run-unknown-status:${run.dbos_status ?? 'unknown'}`);
-  }
-  if (run.status !== 'done' && run.status !== 'error') {
-    throw new Error(`run-timeout:${run.status}`);
-  }
-  const exported = await exportRun(started.run_id);
-
-  renderTimeline(ui.timelineEl, run);
-  renderArtifacts(ui.artifactsEl, exported.artifacts);
-  setRunStatus(ui.status, run.status === 'error' ? 'error' : 'done', `${run.status}:${run.run_id}`);
+/**
+ * @param {string} html
+ */
+function applyUiResponse(html) {
+  const fragment = parseHtml(html);
+  replaceById(fragment, '#main');
+  replaceById(fragment, '#conv');
+  replaceById(fragment, '#exec');
+  replaceById(fragment, '#artifacts');
+  replaceById(fragment, '#run-status');
 }
 
-document.getElementById('run-workflow')?.addEventListener('click', () => {
-  runWorkflow().catch((error) => {
-    if (status) {
-      setRunStatus(status, 'error', String(error));
+function readPollTarget() {
+  const execEl = /** @type {HTMLElement|null} */ (document.getElementById('exec'));
+  if (!execEl) return null;
+  const path = execEl.getAttribute('hx-get');
+  const trigger = execEl.getAttribute('hx-trigger') ?? '';
+  if (!path || !trigger.startsWith('every ')) return null;
+  const rawInterval = trigger.slice('every '.length).trim();
+  const ms = rawInterval.endsWith('s')
+    ? Number(rawInterval.slice(0, -1)) * 1000
+    : rawInterval.endsWith('ms')
+      ? Number(rawInterval.slice(0, -2))
+      : Number(rawInterval);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return { path, intervalMs: Math.floor(ms) };
+}
+
+async function pollLoop() {
+  const status = document.getElementById('run-status');
+  if (!status || status.getAttribute('data-state') !== 'running') return;
+
+  const target = readPollTarget();
+  if (!target) return;
+
+  try {
+    const response = await fetch(target.path, {
+      headers: { 'HX-Request': 'true' }
+    });
+    if (!response.ok) return;
+    const html = await response.text();
+    applyUiResponse(html);
+  } catch {
+    return;
+  }
+
+  setTimeout(() => {
+    void pollLoop();
+  }, target.intervalMs);
+}
+
+async function handleCommandSubmit(event) {
+  const form = /** @type {HTMLFormElement} */ (event.target);
+  if (!form || !form.matches('#command-form')) return;
+  if (typeof window !== 'undefined' && typeof window['htmx'] !== 'undefined') return;
+
+  event.preventDefault();
+  const body = new URLSearchParams();
+  for (const [key, value] of new FormData(form).entries()) {
+    if (typeof value === 'string') {
+      body.append(key, value);
     }
+  }
+  const response = await fetch('/ui/commands', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body
   });
+  const html = await response.text();
+  applyUiResponse(html);
+  void pollLoop();
+}
+
+document.addEventListener('submit', (event) => {
+  void handleCommandSubmit(event);
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  void pollLoop();
+});
+
+document.body.addEventListener('htmx:afterSwap', () => {
+  void pollLoop();
 });

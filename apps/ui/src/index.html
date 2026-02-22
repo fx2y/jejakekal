@@ -5,27 +5,41 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Jejakekal Harness</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/htmx.min.js"></script>
+    <script>
+      if (window.htmx) {
+        window.htmx.config.historyRestoreAsHxRequest = false;
+      }
+    </script>
   </head>
   <body>
-    <main class="layout">
+    <main id="main" class="layout" hx-boost="true" hx-target="#main" hx-swap="outerHTML">
       <section id="conversation-plane" class="plane">
-        <h1>Conversation</h1>
-        <textarea id="doc-input" rows="5">alpha\nbeta [low]\ngamma</textarea>
-        <button id="run-workflow">Run Workflow</button>
-        <p id="run-status" data-state="idle">idle</p>
+        <aside id="conv">
+          <h1>Conversation</h1>
+          <form id="command-form" hx-post="/ui/commands" hx-target="#conv" hx-swap="outerHTML">
+            <label for="cmd-input">Command</label>
+            <input id="cmd-input" name="cmd" type="text" value="/doc alpha beta gamma" />
+            <button type="submit">Run</button>
+          </form>
+          <p id="run-status" data-state="idle">idle</p>
+        </aside>
       </section>
 
       <section id="execution-plane" class="plane">
-        <h2>Execution</h2>
-        <ul id="timeline"></ul>
+        <aside id="exec">
+          <h2>Execution</h2>
+          <ul id="timeline"></ul>
+        </aside>
       </section>
 
       <section id="artifact-plane" class="plane">
-        <h2>Artifacts</h2>
-        <ul id="artifacts"></ul>
+        <main id="artifacts">
+          <h2>Artifacts</h2>
+          <ul></ul>
+        </main>
       </section>
     </main>
-
     <script type="module" src="/app.js"></script>
   </body>
 </html>
