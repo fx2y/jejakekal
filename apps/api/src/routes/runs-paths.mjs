@@ -23,8 +23,22 @@ export function decodeRunRouteId(pathname) {
  * @param {string} pathname
  */
 export function decodeRunExportRouteId(pathname) {
+  return decodeRunRouteIdWithSuffix(pathname, '/export');
+}
+
+/**
+ * @param {string} pathname
+ */
+export function decodeRunResumeRouteId(pathname) {
+  return decodeRunRouteIdWithSuffix(pathname, '/resume');
+}
+
+/**
+ * @param {string} pathname
+ * @param {string} suffix
+ */
+function decodeRunRouteIdWithSuffix(pathname, suffix) {
   const prefix = '/runs/';
-  const suffix = '/export';
   if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
   const raw = pathname.slice(prefix.length, pathname.length - suffix.length);
   if (!raw || raw.includes('/')) return null;

@@ -50,6 +50,19 @@ function rawHttp(req) {
   });
 }
 
+async function waitForRunTerminal(baseUrl, runId, attempts = 80, delayMs = 25) {
+  /** @type {any} */
+  let run = null;
+  for (let i = 0; i < attempts; i += 1) {
+    const pollRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(runId)}`);
+    assert.equal(pollRes.status, 200);
+    run = await pollRes.json();
+    if (run.status === 'done' || run.status === 'error') break;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return run;
+}
+
 test('C1 smoke: DBOS run writes dbos.workflow_status + dbos.operation_outputs', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
@@ -186,7 +199,7 @@ test('C2 canonical /runs is durable-start async and GET /runs/:id projects order
   const startRes = await fetch(`${baseUrl}/runs`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ source: 'c2-http', sleepMs: 500 })
+    body: JSON.stringify({ intent: 'doc', args: { source: 'c2-http' }, sleepMs: 500 })
   });
   assert.equal(startRes.status, 202);
   const started = await startRes.json();
@@ -221,6 +234,153 @@ test('C2 canonical /runs is durable-start async and GET /runs/:id projects order
   assert.ok(run.timeline.some((row) => row.function_name === 'prepare'));
   assert.ok(run.timeline.some((row) => row.function_name === 'side-effect'));
   assert.ok(run.timeline.some((row) => row.function_name === 'finalize'));
+  assert.ok(Array.isArray(run.artifacts));
+  assert.equal(run.artifacts.length, 4);
+});
+
+test('C2 payload guards: no default source fallback and invalid command typed 400', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const missingPayload = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({})
+  });
+  assert.equal(missingPayload.status, 400);
+  assert.deepEqual(await missingPayload.json(), { error: 'invalid_run_payload' });
+
+  const unknownCommand = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ cmd: '/nope abc' })
+  });
+  assert.equal(unknownCommand.status, 400);
+  assert.deepEqual(await unknownCommand.json(), { error: 'invalid_command', cmd: '/nope' });
+});
+
+test('C2 chat ledger invariant: POST /runs writes cmd,args,run_id only', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ cmd: '/doc chat-ledger-c2', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  assert.equal(typeof started.run_id, 'string');
+
+  const rows = await client.query(
+    `SELECT cmd, args, run_id, created_at
+     FROM chat_event
+     WHERE run_id = $1`,
+    [started.run_id]
+  );
+  assert.equal(rows.rows.length, 1);
+  assert.equal(rows.rows[0].cmd, '/doc');
+  assert.deepEqual(rows.rows[0].args, { source: 'chat-ledger-c2' });
+  assert.equal(rows.rows[0].run_id, started.run_id);
+  assert.ok(rows.rows[0].created_at);
+  assert.equal(Object.hasOwn(rows.rows[0], 'answer'), false);
+});
+
+test('C2 artifact routes: list/detail/download and typed id errors', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  t.after(() => unfreeze());
+
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ intent: 'doc', args: { source: 'artifact-route-c2' }, sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+
+  const listRes = await fetch(`${baseUrl}/artifacts?type=raw&visibility=user`);
+  assert.equal(listRes.status, 200);
+  const listed = await listRes.json();
+  assert.equal(Array.isArray(listed), true);
+  assert.equal(listed.length >= 1, true);
+  assert.equal(listed[0].type, 'raw');
+  assert.equal(listed[0].run_id, started.run_id);
+
+  const artifactId = `${started.run_id}:raw`;
+  const detailRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
+  assert.equal(detailRes.status, 200);
+  const detail = await detailRes.json();
+  assert.equal(detail.meta.id, artifactId);
+  assert.equal(detail.meta.type, 'raw');
+  assert.equal(typeof detail.content, 'string');
+  assert.equal(detail.content.includes('artifact-route-c2'), true);
+  assert.equal(detail.prov.run_id, started.run_id);
+
+  const downloadRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}/download`);
+  assert.equal(downloadRes.status, 200);
+  assert.equal(downloadRes.headers.get('content-type')?.startsWith('text/plain'), true);
+  assert.equal((await downloadRes.text()).includes('artifact-route-c2'), true);
+
+  const notFoundRes = await fetch(`${baseUrl}/artifacts/not-found`);
+  assert.equal(notFoundRes.status, 404);
+  assert.deepEqual(await notFoundRes.json(), { error: 'artifact_not_found', artifact_id: 'not-found' });
+
+  const badDetail = await rawHttp({
+    port: api.port,
+    method: 'GET',
+    path: '/artifacts/%2E%2E'
+  });
+  assert.equal(badDetail.status, 400);
+  assert.deepEqual(badDetail.json, { error: 'invalid_artifact_id', field: 'artifact_id' });
+});
+
+test('C2 resume endpoint rejects non-resumable run states with typed conflict', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'resume-guard-c2', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+
+  const resumeRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/resume`, {
+    method: 'POST'
+  });
+  assert.equal(resumeRes.status, 409);
+  assert.deepEqual(await resumeRes.json(), {
+    error: 'run_not_resumable',
+    run_id: started.run_id
+  });
 });
 
 test('C3 export endpoint writes additive DBOS snapshot bundle for offline reconstruction', async (t) => {

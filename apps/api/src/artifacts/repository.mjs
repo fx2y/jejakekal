@@ -69,6 +69,26 @@ export async function listArtifactsByRunId(client, runId) {
 
 /**
  * @param {import('pg').Client} client
+ * @param {{type?: string, visibility?: string, q?: string}} filters
+ */
+export async function listArtifactsByFilters(client, filters = {}) {
+  const type = filters.type ? assertValidArtifactId(filters.type, 'type') : null;
+  const visibility = filters.visibility ?? null;
+  const q = filters.q ? `%${filters.q}%` : null;
+  const result = await client.query(
+    `SELECT id, run_id, type, format, uri, sha256, title, status, visibility, supersedes_id, prov, created_at
+     FROM artifact
+     WHERE ($1::text IS NULL OR type = $1)
+       AND ($2::text IS NULL OR visibility = $2)
+       AND ($3::text IS NULL OR title ILIKE $3)
+     ORDER BY created_at DESC, id DESC`,
+    [type, visibility, q]
+  );
+  return result.rows.map((row) => mapArtifactRow(row));
+}
+
+/**
+ * @param {import('pg').Client} client
  * @param {string} artifactId
  */
 export async function getArtifactById(client, artifactId) {
@@ -100,5 +120,22 @@ export function mapArtifactRow(row) {
     supersedes_id: typeof row.supersedes_id === 'string' ? row.supersedes_id : null,
     prov: toJsonObject(row.prov),
     created_at: row.created_at ? new Date(String(row.created_at)).toISOString() : null
+  };
+}
+
+/**
+ * @param {ReturnType<typeof mapArtifactRow>} artifact
+ */
+export function toArtifactListItem(artifact) {
+  return {
+    id: artifact.id,
+    run_id: artifact.run_id,
+    type: artifact.type,
+    format: artifact.format,
+    title: artifact.title,
+    status: artifact.status,
+    visibility: artifact.visibility,
+    created_at: artifact.created_at,
+    cost: artifact.prov?.cost ?? null
   };
 }

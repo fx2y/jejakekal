@@ -1,12 +1,9 @@
 import { startDefaultWorkflowRun } from './dbos-workflows.mjs';
 import { getRunProjection } from './runs-projections.mjs';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
-import { conflict } from './request-errors.mjs';
+import { badRequest, conflict } from './request-errors.mjs';
 import { assertValidRunId } from './run-id.mjs';
-
-function normalizeString(value, fallback) {
-  return typeof value === 'string' ? value : fallback;
-}
+import { commandToWorkflowValue, parseIntentPayload, parseSlashCommand } from './commands/parse-command.mjs';
 
 function normalizeOptionalString(value) {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -20,12 +17,13 @@ function normalizeSleepMs(value) {
 }
 
 /**
- * @param {{source: string, sleepMs?: number}} params
+ * @param {{intent: string, args: Record<string, unknown>, sleepMs?: number}} params
  */
 function makeInputHash(params) {
   return sha256(
     JSON.stringify({
-      source: params.source,
+      intent: params.intent,
+      args: params.args,
       sleepMs: params.sleepMs ?? null
     })
   );
@@ -59,25 +57,51 @@ export function normalizeRunStartPayload(payload) {
     payload && typeof payload === 'object'
       ? /** @type {Record<string, unknown>} */ (payload)
       : {};
+  const workflowId = normalizeOptionalString(body.workflowId);
+  const sleepMs = normalizeSleepMs(body.sleepMs);
+  if (typeof body.cmd === 'string') {
+    const parsed = parseSlashCommand(body.cmd);
+    return { ...parsed, workflowId, sleepMs, compat: false };
+  }
+  if (typeof body.intent === 'string') {
+    const parsed = parseIntentPayload(body);
+    return { ...parsed, workflowId, sleepMs, compat: false };
+  }
+  if (typeof body.source === 'string' && body.source.trim().length > 0) {
+    return {
+      cmd: '/doc',
+      intent: 'doc',
+      args: { source: body.source.trim() },
+      workflowId,
+      sleepMs,
+      compat: true
+    };
+  }
+  throw badRequest('invalid_run_payload');
+}
+
+/**
+ * @param {{intent:string, args:Record<string, unknown>}} command
+ */
+function toWorkflowInput(command) {
   return {
-    source: normalizeString(body.source, 'default doc'),
-    workflowId: normalizeOptionalString(body.workflowId),
-    sleepMs: normalizeSleepMs(body.sleepMs)
+    value: commandToWorkflowValue(command)
   };
 }
 
 /**
  * @param {import('pg').Client} client
- * @param {{source: string, workflowId?: string, sleepMs?: number, bundlesRoot?: string}} params
+ * @param {{intent:string, args:Record<string, unknown>, workflowId?: string, sleepMs?: number, bundlesRoot?: string}} params
  */
 export async function startRunDurably(client, params) {
+  const workflowInput = toWorkflowInput(params);
   if (params.workflowId) {
     assertValidRunId(params.workflowId, 'workflowId');
     await ensureWorkflowIdPayloadMatch(client, params.workflowId, makeInputHash(params));
   }
   const handle = await startDefaultWorkflowRun({
     workflowId: params.workflowId,
-    value: params.source,
+    value: workflowInput.value,
     sleepMs: params.sleepMs,
     bundlesRoot: params.bundlesRoot
   });

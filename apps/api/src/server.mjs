@@ -6,6 +6,7 @@ import { applySchema, makeClient } from './db.mjs';
 import { ensureDbosRuntime, shutdownDbosRuntime } from './dbos-runtime.mjs';
 import { closeServer, listenLocal, sendJson } from './http.mjs';
 import { handleRunsRoute } from './runs-routes.mjs';
+import { handleArtifactsRoute } from './artifacts-routes.mjs';
 import { handleSystemRoute } from './system-routes.mjs';
 import { isRequestError } from './request-errors.mjs';
 import { onceAsync } from '../../../packages/core/src/once-async.mjs';
@@ -31,6 +32,7 @@ export async function startApiServer(port = 4010) {
 
       const handled =
         (await handleRunsRoute(req, res, { client, bundlesRoot })) ||
+        (await handleArtifactsRoute(req, res, { client, bundlesRoot })) ||
         (await handleSystemRoute(req, res, { client }));
       if (handled) {
         return;

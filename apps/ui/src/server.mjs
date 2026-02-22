@@ -39,8 +39,16 @@ export async function startUiServer(uiPort = 4110, opts = {}) {
           headers: { 'content-type': req.headers['content-type'] ?? 'application/json' },
           body: req.method === 'POST' ? await readRequest(req) : undefined
         });
-        const body = await upstream.text();
-        res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' });
+        const body = Buffer.from(await upstream.arrayBuffer());
+        /** @type {Record<string, string>} */
+        const headers = {
+          'content-type': upstream.headers.get('content-type') ?? 'application/json'
+        };
+        const contentDisposition = upstream.headers.get('content-disposition');
+        if (contentDisposition) {
+          headers['content-disposition'] = contentDisposition;
+        }
+        res.writeHead(upstream.status, headers);
         res.end(body);
         return;
       }
@@ -106,7 +114,7 @@ function resolveStaticFile(url) {
  * @param {string} url
  */
 function shouldProxy(url) {
-  return url.startsWith('/runs') || url === '/healthz';
+  return url.startsWith('/runs') || url.startsWith('/artifacts') || url === '/healthz';
 }
 
 /**

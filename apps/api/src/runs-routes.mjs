@@ -1,8 +1,13 @@
 import { readJsonRequest, sendJson } from './http.mjs';
 import { exportRunBundle } from './export-run.mjs';
 import { readRun, normalizeRunStartPayload, startRunDurably } from './runs-service.mjs';
+import { insertChatEvent } from './chat-events/repository.mjs';
+import { conflict } from './request-errors.mjs';
+import { ensureDbosRuntime } from './dbos-runtime.mjs';
+import { DBOS } from '@dbos-inc/dbos-sdk';
 import {
   decodeRunExportRouteId,
+  decodeRunResumeRouteId,
   decodeRunRouteId,
   getRequestPathname
 } from './routes/runs-paths.mjs';
@@ -19,6 +24,7 @@ export async function handleRunsRoute(req, res, ctx) {
   if (req.method === 'POST' && pathname === '/runs') {
     const payload = normalizeRunStartPayload(await readJsonRequest(req));
     const { runId } = await startRunDurably(ctx.client, { ...payload, bundlesRoot: ctx.bundlesRoot });
+    await insertChatEvent(ctx.client, { cmd: payload.cmd, args: payload.args, run_id: runId });
     const run = await readRun(ctx.client, runId);
     sendJson(res, 202, {
       run_id: runId,
@@ -52,6 +58,24 @@ export async function handleRunsRoute(req, res, ctx) {
         return true;
       }
       sendJson(res, 200, run);
+      return true;
+    }
+  }
+
+  if (req.method === 'POST') {
+    const resumeRunId = decodeRunResumeRouteId(pathname);
+    if (resumeRunId) {
+      const run = await readRun(ctx.client, resumeRunId);
+      if (!run) {
+        sendJson(res, 404, { error: 'run_not_found', run_id: resumeRunId });
+        return true;
+      }
+      if (!['CANCELLED', 'RETRIES_EXCEEDED'].includes(String(run.dbos_status))) {
+        throw conflict('run_not_resumable', { run_id: resumeRunId });
+      }
+      await ensureDbosRuntime();
+      await DBOS.resumeWorkflow(resumeRunId);
+      sendJson(res, 202, { run_id: resumeRunId, status: 'running' });
       return true;
     }
   }

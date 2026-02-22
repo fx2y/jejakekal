@@ -1,3 +1,5 @@
+import { listArtifactsByRunId, toArtifactListItem } from './artifacts/repository.mjs';
+
 function parseDbosCell(value) {
   if (value == null) return null;
   if (typeof value !== 'string') return value;
@@ -104,12 +106,14 @@ export async function getRunProjection(client, workflowId) {
   const header = await getRunHeader(client, workflowId);
   if (!header) return null;
   const timeline = await getRunSteps(client, workflowId);
+  const artifacts = await listArtifactsByRunId(client, workflowId);
   return {
     run_id: workflowId,
     status: mapDbosStatusToApiStatus(header.status),
     dbos_status: header.status,
     header,
-    timeline
+    timeline,
+    artifacts: artifacts.map((artifact) => toArtifactListItem(artifact))
   };
 }
 
