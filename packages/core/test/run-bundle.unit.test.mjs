@@ -13,20 +13,22 @@ test('run-bundle diff ignores timestamps and checks structure', async () => {
 
   try {
     await writeRunBundle(leftDir, {
-      manifest: makeManifest({ workflowId: 'wf-1', root: '/tmp/wf-1' }),
+      manifest: makeManifest({ workflowId: 'wf-1', root: '/tmp/a/wf-1' }),
       timeline: [{ step: 'a', phase: 'completed' }],
       toolIO: [],
       artifacts: [{ id: 'memo' }],
-      citations: [{ source: 'x' }]
+      citations: [{ source: 'x' }],
+      extraJsonFiles: { 'workflow_status.json': { workflow_uuid: 'wf-1', status: 'SUCCESS' } }
     });
 
     unfreeze();
     await writeRunBundle(rightDir, {
-      manifest: makeManifest({ workflowId: 'wf-1', root: '/tmp/wf-1' }),
+      manifest: makeManifest({ workflowId: 'wf-1', root: '/private/tmp/b/wf-1' }),
       timeline: [{ step: 'a', phase: 'completed' }],
       toolIO: [],
       artifacts: [{ id: 'memo' }],
-      citations: [{ source: 'x' }]
+      citations: [{ source: 'x' }],
+      extraJsonFiles: { 'workflow_status.json': { workflow_uuid: 'wf-1', status: 'SUCCESS' } }
     });
 
     const diffs = await diffRunBundles(leftDir, rightDir);

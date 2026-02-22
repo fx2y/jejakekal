@@ -17,7 +17,7 @@ async function withAppClient(run) {
 }
 
 async function prepareStep(value) {
-  return { prepared: value.toUpperCase() };
+  return { source: value, prepared: value.toUpperCase() };
 }
 
 async function sideEffectStep() {

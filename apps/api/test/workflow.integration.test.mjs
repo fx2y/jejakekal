@@ -6,6 +6,7 @@ import { mapOperationOutputRow, mapWorkflowStatusRow } from '../src/runs-project
 import { defaultWorkflow, readOperationOutputs, readWorkflowStatus } from '../src/workflow.mjs';
 import { setupDbOrSkip } from './helpers.mjs';
 import { freezeDeterminism } from '../../../packages/core/src/determinism.mjs';
+import { readBundle } from '../../../packages/core/src/run-bundle.mjs';
 
 test('C1 smoke: DBOS run writes dbos.workflow_status + dbos.operation_outputs', async (t) => {
   const client = await setupDbOrSkip(t);
@@ -114,4 +115,60 @@ test('C2 canonical /runs is durable-start async and GET /runs/:id projects order
   assert.ok(run.timeline.some((row) => row.function_name === 'prepare'));
   assert.ok(run.timeline.some((row) => row.function_name === 'side-effect'));
   assert.ok(run.timeline.some((row) => row.function_name === 'finalize'));
+});
+
+test('C3 export endpoint writes additive DBOS snapshot bundle for offline reconstruction', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  t.after(() => unfreeze());
+
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const source = 'alpha\nbeta [low]\ngamma';
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source, sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+
+  /** @type {any} */
+  let run = null;
+  for (let i = 0; i < 80; i += 1) {
+    const pollRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}`);
+    assert.equal(pollRes.status, 200);
+    run = await pollRes.json();
+    if (run.status === 'done') break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(run?.status, 'done');
+
+  const exportRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/export`);
+  assert.equal(exportRes.status, 200);
+  const exported = await exportRes.json();
+  assert.equal(exported.run_id, started.run_id);
+  assert.equal(typeof exported.run_bundle_path, 'string');
+  assert.deepEqual(
+    exported.artifacts.map((row) => row.id),
+    ['raw', 'docir', 'chunk-index', 'memo']
+  );
+
+  const bundle = await readBundle(exported.run_bundle_path);
+  assert.ok(bundle['workflow_status.json']);
+  assert.ok(bundle['operation_outputs.json']);
+  assert.equal(bundle['manifest.json'].root, '<run-bundle-root>');
+
+  assert.equal(bundle['workflow_status.json'].workflow_uuid, started.run_id);
+  assert.equal(bundle['workflow_status.json'].status, 'SUCCESS');
+  assert.deepEqual(
+    bundle['operation_outputs.json'].map((row) => row.function_id),
+    run.timeline.map((row) => row.function_id)
+  );
+  assert.equal(bundle['operation_outputs.json'][0].output.source, source);
 });

@@ -27,7 +27,7 @@ export async function startApiServer(port = 4010) {
       }
 
       const handled =
-        (await handleRunsRoute(req, res, { client })) ||
+        (await handleRunsRoute(req, res, { client, bundlesRoot })) ||
         (await handleLegacyApiRoute(req, res, { client, bundlesRoot }));
       if (handled) {
         return;

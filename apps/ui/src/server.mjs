@@ -16,7 +16,7 @@ export async function startUiServer(uiPort = 4110) {
         return;
       }
 
-      if (req.url.startsWith('/api/')) {
+      if (shouldProxy(req.url)) {
         const upstream = await fetch(`http://127.0.0.1:${api.port}${req.url}`, {
           method: req.method,
           headers: { 'content-type': req.headers['content-type'] ?? 'application/json' },
@@ -83,6 +83,13 @@ function resolveStaticFile(url) {
     return name;
   }
   return 'index.html';
+}
+
+/**
+ * @param {string} url
+ */
+function shouldProxy(url) {
+  return url.startsWith('/api/') || url.startsWith('/runs') || url === '/healthz';
 }
 
 /**

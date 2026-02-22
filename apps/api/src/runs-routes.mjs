@@ -1,4 +1,5 @@
 import { readJsonRequest, sendJson } from './http.mjs';
+import { exportRunBundle } from './export-run.mjs';
 import { readRun, normalizeRunStartPayload, startRunDurably } from './runs-service.mjs';
 
 function getPathname(url) {
@@ -13,10 +14,19 @@ function decodeRunId(pathname) {
   return decodeURIComponent(raw);
 }
 
+function decodeRunExportId(pathname) {
+  const prefix = '/runs/';
+  const suffix = '/export';
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
+  const raw = pathname.slice(prefix.length, pathname.length - suffix.length);
+  if (!raw || raw.includes('/')) return null;
+  return decodeURIComponent(raw);
+}
+
 /**
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
- * @param {{client: import('pg').Client}} ctx
+ * @param {{client: import('pg').Client, bundlesRoot: string}} ctx
  */
 export async function handleRunsRoute(req, res, ctx) {
   if (!req.url) return false;
@@ -35,6 +45,21 @@ export async function handleRunsRoute(req, res, ctx) {
   }
 
   if (req.method === 'GET') {
+    const exportRunId = decodeRunExportId(pathname);
+    if (exportRunId) {
+      const exported = await exportRunBundle({
+        client: ctx.client,
+        bundlesRoot: ctx.bundlesRoot,
+        runId: exportRunId
+      });
+      if (!exported) {
+        sendJson(res, 404, { error: 'run_not_found', run_id: exportRunId });
+        return true;
+      }
+      sendJson(res, 200, exported);
+      return true;
+    }
+
     const runId = decodeRunId(pathname);
     if (runId) {
       const run = await readRun(ctx.client, runId);
@@ -49,4 +74,3 @@ export async function handleRunsRoute(req, res, ctx) {
 
   return false;
 }
-

@@ -63,7 +63,14 @@ export function makeManifest(opts) {
 
 /**
  * @param {string} dir
- * @param {{manifest: RunManifest, timeline: unknown[], toolIO: unknown[], artifacts: unknown[], citations: unknown[]}} bundle
+ * @param {{
+ * manifest: RunManifest,
+ * timeline: unknown[],
+ * toolIO: unknown[],
+ * artifacts: unknown[],
+ * citations: unknown[],
+ * extraJsonFiles?: Record<string, unknown>
+ * }} bundle
  */
 export async function writeRunBundle(dir, bundle) {
   await ensureEmptyDir(dir);
@@ -73,7 +80,8 @@ export async function writeRunBundle(dir, bundle) {
     'timeline.json': bundle.timeline,
     'tool-io.json': bundle.toolIO,
     'artifacts.json': bundle.artifacts,
-    'citations.json': bundle.citations
+    'citations.json': bundle.citations,
+    ...(bundle.extraJsonFiles ?? {})
   };
 
   /** @type {Record<string,string>} */
@@ -107,6 +115,7 @@ function normalize(fileMap) {
   const clone = structuredClone(fileMap);
   if (clone['manifest.json']) {
     clone['manifest.json'].createdAt = '<normalized>';
+    clone['manifest.json'].root = '<normalized-root>';
   }
   return clone;
 }

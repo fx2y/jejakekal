@@ -20,8 +20,12 @@ test('3-plane product promise path (ingest -> timeline -> artifacts)', async ({ 
 
   await page.click('#run-workflow');
   await expect(page.locator('#run-status')).toContainText('done:');
+  await expect(page.locator('#run-status')).toHaveAttribute('data-state', 'done');
 
   await expect(page.locator('#timeline li')).toHaveCount(6);
+  await expect(page.locator('#timeline li').first()).toContainText('run_id=');
+  await expect(page.locator('#timeline li[data-function-id=\"0\"]')).toContainText('0:prepare:ok');
+  await expect(page.locator('#timeline li[data-function-id=\"1\"]')).toContainText('1:DBOS.sleep:ok');
   await expect(page.locator('#artifacts li')).toHaveCount(4);
   await expect(page.locator('[data-artifact-id="memo"]')).toBeVisible();
 });

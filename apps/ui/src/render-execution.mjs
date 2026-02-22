@@ -10,13 +10,43 @@ export function setRunStatus(statusEl, state, text) {
 
 /**
  * @param {HTMLElement} timelineEl
- * @param {Array<{step: string, phase: string}>} timeline
+ * @param {{
+ * run_id: string,
+ * status: string,
+ * dbos_status?: string | null,
+ * header?: {
+ *   name?: string | null,
+ *   created_at?: string | number | null,
+ *   updated_at?: string | number | null,
+ *   recovery_attempts?: number | null,
+ *   executor_id?: string | null
+ * },
+ * timeline?: Array<{
+ *   function_id: number,
+ *   function_name: string,
+ *   started_at_epoch_ms?: number | null,
+ *   completed_at_epoch_ms?: number | null,
+ *   output?: unknown,
+ *   error?: unknown
+ * }>
+ * }} run
  */
-export function renderTimeline(timelineEl, timeline) {
+export function renderTimeline(timelineEl, run) {
   timelineEl.innerHTML = '';
-  for (const row of timeline) {
+
+  const summary = document.createElement('li');
+  summary.textContent = `run_id=${run.run_id} name=${run.header?.name ?? ''} status=${run.status}/${run.dbos_status ?? 'unknown'}`;
+  timelineEl.append(summary);
+
+  const meta = document.createElement('li');
+  meta.textContent = `created=${run.header?.created_at ?? 'n/a'} updated=${run.header?.updated_at ?? 'n/a'} recovery_attempts=${run.header?.recovery_attempts ?? 'n/a'} executor_id=${run.header?.executor_id ?? 'n/a'}`;
+  timelineEl.append(meta);
+
+  for (const row of run.timeline ?? []) {
     const li = document.createElement('li');
-    li.textContent = `${row.step}:${row.phase}`;
+    const phase = row.error ? 'error' : 'ok';
+    li.textContent = `${row.function_id}:${row.function_name}:${phase}`;
+    li.dataset.functionId = String(row.function_id);
     timelineEl.append(li);
   }
 }

@@ -1,22 +1,9 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ingestDocument } from '../../../packages/pipeline/src/ingest.mjs';
-import { makeManifest, writeRunBundle } from '../../../packages/core/src/run-bundle.mjs';
+import { exportRunBundle } from './export-run.mjs';
 import { readRun, normalizeRunStartPayload, startRunDurably } from './runs-service.mjs';
 import { toLegacyTimeline } from './runs-projections.mjs';
 import { readJsonRequest, sendJson } from './http.mjs';
-
-/**
- * @param {{ paths: { raw: string, docir: string, chunkIndex: string, memo: string } }} ingest
- */
-function buildArtifacts(ingest) {
-  return [
-    { id: 'raw', path: ingest.paths.raw },
-    { id: 'docir', path: ingest.paths.docir },
-    { id: 'chunk-index', path: ingest.paths.chunkIndex },
-    { id: 'memo', path: ingest.paths.memo }
-  ];
-}
 
 /**
  * @param {import('node:http').IncomingMessage} req
@@ -29,25 +16,15 @@ export async function handleLegacyApiRoute(req, res, ctx) {
   if (req.method === 'POST' && req.url === '/api/run') {
     const payload = normalizeRunStartPayload(await readJsonRequest(req));
     const { handle, runId } = await startRunDurably(payload);
-    const outDir = join(ctx.bundlesRoot, runId, 'ingest');
-
-    const ingest = await ingestDocument({ docId: runId, source: payload.source, outDir });
     await handle.getResult();
-    const run = await readRun(ctx.client, runId);
-    const timeline = toLegacyTimeline(run?.timeline ?? []);
-
-    const bundleDir = join(ctx.bundlesRoot, runId, 'bundle');
-    const manifest = makeManifest({ workflowId: runId, root: bundleDir });
-    const artifacts = buildArtifacts(ingest);
-    await writeRunBundle(bundleDir, {
-      manifest,
+    const exported = await exportRunBundle({ client: ctx.client, bundlesRoot: ctx.bundlesRoot, runId });
+    const timeline = toLegacyTimeline(exported?.timeline ?? []);
+    sendJson(res, 200, {
+      workflowId: runId,
+      bundleDir: exported?.run_bundle_path ?? join(ctx.bundlesRoot, runId, 'bundle'),
       timeline,
-      toolIO: [{ tool: 'pipeline.ingest', workflowId: runId }],
-      artifacts,
-      citations: [{ source: 'local', confidence: 1, text: payload.source.slice(0, 24) }]
+      artifacts: exported?.artifacts ?? []
     });
-
-    sendJson(res, 200, { workflowId: runId, bundleDir, timeline, artifacts });
     return true;
   }
 

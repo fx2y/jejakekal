@@ -1,4 +1,4 @@
-import { startRun } from './api-client.mjs';
+import { exportRun, pollRun, startRun } from './api-client.mjs';
 import { renderArtifacts, renderTimeline, setRunStatus } from './render-execution.mjs';
 
 const status = /** @type {HTMLElement|null} */ (document.getElementById('run-status'));
@@ -17,11 +17,16 @@ async function runWorkflow() {
   const ui = requireUiElements();
 
   setRunStatus(ui.status, 'running', 'running');
-  const result = await startRun({ source: ui.inputEl.value });
+  const started = await startRun({ source: ui.inputEl.value });
+  const run = await pollRun(started.run_id);
+  if (run.status !== 'done' && run.status !== 'error') {
+    throw new Error(`run-timeout:${run.status}`);
+  }
+  const exported = await exportRun(started.run_id);
 
-  renderTimeline(ui.timelineEl, result.timeline);
-  renderArtifacts(ui.artifactsEl, result.artifacts);
-  setRunStatus(ui.status, 'done', `done:${result.workflowId}`);
+  renderTimeline(ui.timelineEl, run);
+  renderArtifacts(ui.artifactsEl, exported.artifacts);
+  setRunStatus(ui.status, run.status === 'error' ? 'error' : 'done', `${run.status}:${run.run_id}`);
 }
 
 document.getElementById('run-workflow')?.addEventListener('click', () => {
