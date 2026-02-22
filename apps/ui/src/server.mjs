@@ -2,13 +2,15 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startApiServer } from '../../api/src/server.mjs';
+import { closeServer, listenLocal } from '../../api/src/http.mjs';
 import { onceAsync } from '../../../packages/core/src/once-async.mjs';
 
 /**
  * @param {number} uiPort
+ * @param {{apiPort?: number}} [opts]
  */
-export async function startUiServer(uiPort = 4110) {
-  const api = await startApiServer(Number(process.env.API_PORT ?? '4010'));
+export async function startUiServer(uiPort = 4110, opts = {}) {
+  const api = await startApiServer(Number(opts.apiPort ?? process.env.API_PORT ?? '4010'));
 
   const server = createServer(async (req, res) => {
     try {
@@ -40,24 +42,15 @@ export async function startUiServer(uiPort = 4110) {
     }
   });
 
-  await new Promise((resolve) => {
-    server.listen(uiPort, '127.0.0.1', () => resolve(undefined));
-  });
+  const boundUiPort = await listenLocal(server, uiPort);
   const close = onceAsync(async () => {
-    await new Promise((resolve, reject) => {
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(undefined);
-      });
-    });
+    await closeServer(server);
     await api.close();
   });
 
   return {
-    uiPort,
+    uiPort: boundUiPort,
+    apiPort: api.port,
     close
   };
 }

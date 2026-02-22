@@ -2,9 +2,15 @@ import { test, expect } from '@playwright/test';
 import { startUiServer } from '../src/server.mjs';
 
 let runtime;
+let baseUrl;
 
 test.beforeAll(async () => {
-  runtime = await startUiServer(4110);
+  try {
+    runtime = await startUiServer(0, { apiPort: 0 });
+  } catch (error) {
+    throw new Error(`ui e2e startup failed: ${String(error)}`);
+  }
+  baseUrl = `http://127.0.0.1:${runtime.uiPort}`;
 });
 
 test.afterAll(async () => {
@@ -12,7 +18,7 @@ test.afterAll(async () => {
 });
 
 test('3-plane product promise path (ingest -> timeline -> artifacts)', async ({ page }) => {
-  await page.goto('http://127.0.0.1:4110');
+  await page.goto(baseUrl);
 
   await expect(page.locator('#conversation-plane')).toBeVisible();
   await expect(page.locator('#execution-plane')).toBeVisible();
@@ -31,7 +37,7 @@ test('3-plane product promise path (ingest -> timeline -> artifacts)', async ({ 
 });
 
 test('ui polling remains stable for long-running workflow when timeout configured', async ({ page }) => {
-  await page.goto('http://127.0.0.1:4110/?sleepMs=6500&pollTimeoutMs=20000&pollIntervalMs=25');
+  await page.goto(`${baseUrl}/?sleepMs=6500&pollTimeoutMs=20000&pollIntervalMs=25`);
 
   await page.click('#run-workflow');
   await expect(page.locator('#run-status')).toContainText('running');

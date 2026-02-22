@@ -50,8 +50,19 @@ export function sendText(res, status, body, contentType = 'text/plain') {
  * @param {number} port
  */
 export async function listenLocal(server, port) {
-  await new Promise((resolve) => {
-    server.listen(port, '127.0.0.1', () => resolve(undefined));
+  await new Promise((resolve, reject) => {
+    const onError = (error) => {
+      server.off('listening', onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolve(undefined);
+    };
+
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port, '127.0.0.1');
   });
   const address = server.address();
   if (!address || typeof address === 'string') {
