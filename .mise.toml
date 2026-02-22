@@ -64,7 +64,7 @@ outputs = [".cache/test-workflow.stamp"]
 
 [tasks."test:replay"]
 run = "bash mise-tasks/test/replay"
-sources = ["apps/api/src/**/*.mjs", "apps/api/test/replay.integration.test.mjs", "infra/sql/schema.sql"]
+sources = ["apps/api/src/**/*.mjs", "apps/api/test/replay.integration.test.mjs", "apps/api/test/helpers.mjs", "infra/sql/schema.sql"]
 outputs = [".cache/test-replay.stamp"]
 
 [tasks."test:idempotency"]
@@ -127,6 +127,12 @@ run = "mise run stack:reset"
 
 [tasks.psql]
 run = "bash mise-tasks/stack/psql"
+
+[tasks."dbos:workflow:get"]
+run = "bash mise-tasks/dbos/workflow-get"
+
+[tasks."dbos:workflow:steps"]
+run = "bash mise-tasks/dbos/workflow-steps"
 
 [tasks."smoke:ingest"]
 run = "bash mise-tasks/smoke/ingest"

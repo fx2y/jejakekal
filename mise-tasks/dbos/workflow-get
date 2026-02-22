@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${1-}" = "" ]; then
+  echo "usage: mise run dbos:workflow:get -- <workflow-id>" >&2
+  exit 2
+fi
+
+pnpm --filter @jejakekal/api exec dbos workflow get -s "$DBOS_SYSTEM_DATABASE_URL" "$1"
