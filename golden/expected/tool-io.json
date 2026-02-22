@@ -1,0 +1,6 @@
+[
+  {
+    "input": "doc-a.txt",
+    "tool": "pipeline.ingest"
+  }
+]

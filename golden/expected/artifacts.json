@@ -1,0 +1,18 @@
+[
+  {
+    "id": "raw",
+    "path": "golden/generated/golden-doc-a.txt"
+  },
+  {
+    "id": "docir",
+    "path": "golden/generated/golden-doc-a.docir.json"
+  },
+  {
+    "id": "chunks",
+    "path": "golden/generated/golden-doc-a.chunks.json"
+  },
+  {
+    "id": "memo",
+    "path": "golden/generated/golden-doc-a.memo.json"
+  }
+]

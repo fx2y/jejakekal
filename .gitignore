@@ -1,0 +1,22 @@
+node_modules/
+.pnpm-store/
+.mise/
+.cache/
+coverage/
+playwright-report/
+test-results/
+dist/
+.DS_Store
+golden/actual/
+golden/actual-generated/
+golden/generated/
+spec-0/unrelated.tmp
+
+.tmp/
+
+# Spec filtering (intentional project structure)
+spec-*/
+!spec-0/
+spec-0/*
+!spec-0/01*
+!spec-0/00-learnings.jsonl

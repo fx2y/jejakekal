@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+docker compose -f infra/compose/docker-compose.yml exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+DROP DATABASE IF EXISTS jejakekal;
+CREATE DATABASE jejakekal;
+SQL
+docker compose -f infra/compose/docker-compose.yml exec -T postgres psql -U postgres -d jejakekal -v ON_ERROR_STOP=1 < infra/sql/schema.sql

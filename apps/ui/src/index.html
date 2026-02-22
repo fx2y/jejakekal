@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jejakekal Harness</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section id="conversation-plane" class="plane">
+        <h1>Conversation</h1>
+        <textarea id="doc-input" rows="5">alpha\nbeta [low]\ngamma</textarea>
+        <button id="run-workflow">Run Workflow</button>
+        <p id="run-status" data-state="idle">idle</p>
+      </section>
+
+      <section id="execution-plane" class="plane">
+        <h2>Execution</h2>
+        <ul id="timeline"></ul>
+      </section>
+
+      <section id="artifact-plane" class="plane">
+        <h2>Artifacts</h2>
+        <ul id="artifacts"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

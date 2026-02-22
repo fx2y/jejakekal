@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mise x node@24.13.1 -- node scripts/golden-record.mjs

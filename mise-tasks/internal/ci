@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mise run verify
+mise run test:replay
+mise run test:idempotency
+mise run test:pipeline:unit
+mise run test:pipeline:smoke
+mise run test:pipeline:ocr
+mise run test:sandbox
+mise run chaos:sandbox
+mise run golden:diff
+mise run bench:check

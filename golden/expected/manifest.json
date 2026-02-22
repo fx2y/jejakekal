@@ -1,0 +1,8 @@
+{
+  "createdAt": "2026-02-22T10:13:46.315Z",
+  "locale": "C",
+  "root": "golden/bundle",
+  "schemaVersion": "run-bundle-v0",
+  "timezone": "UTC",
+  "workflowId": "golden-workflow"
+}

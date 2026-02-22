@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mise run bench:ingest
+mise run bench:query
+mise run bench:ui
+mise run bench:resume
+mise x node@24.13.1 -- node scripts/bench-check.mjs

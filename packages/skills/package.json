@@ -1,0 +1,9 @@
+{
+  "name": "@jejakekal/skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./loader": "./src/loader.mjs"
+  }
+}

@@ -1,0 +1,70 @@
+:root {
+  --bg-a: #f6f4ee;
+  --bg-b: #cde5d7;
+  --ink: #1f2b23;
+  --accent: #b0472c;
+  --panel: #ffffffcc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: radial-gradient(circle at top right, var(--bg-b), var(--bg-a));
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.plane {
+  background: var(--panel);
+  border: 1px solid #d7d2c7;
+  border-radius: 14px;
+  padding: 1rem;
+  box-shadow: 0 12px 30px #1f2b2314;
+  animation: rise 280ms ease-out;
+}
+
+textarea {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid #c6c0b3;
+  padding: 0.6rem;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+button {
+  margin-top: 0.6rem;
+  padding: 0.55rem 0.9rem;
+  border-radius: 999px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}

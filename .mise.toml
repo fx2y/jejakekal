@@ -1,0 +1,151 @@
+[tools]
+node = "24.13.1"
+pnpm = "10.30.1"
+python = "3.14.3"
+uv = "0.10.4"
+
+[env]
+MISE_JOBS = "4"
+NODE_ENV = "test"
+PGHOST = "127.0.0.1"
+PGPORT = "55440"
+PGUSER = "postgres"
+PGPASSWORD = "postgres"
+PGDATABASE = "jejakekal"
+BLOB_ENDPOINT = "http://127.0.0.1:19000"
+
+[tasks.verify]
+description = "L1 quick gate"
+run = ["mise run lint", "mise run typecheck", "mise run test:unit", "mise run test:workflow"]
+
+[tasks."pre-commit"]
+run = "mise run verify"
+
+[tasks.ci]
+description = "CI parity entrypoint"
+run = [
+  "mise run verify",
+  "mise run test:replay",
+  "mise run test:idempotency",
+  "mise run test:pipeline:unit",
+  "mise run test:pipeline:smoke",
+  "mise run test:pipeline:ocr",
+  "mise run test:sandbox",
+  "mise run chaos:sandbox",
+  "mise run golden:diff",
+  "mise run bench:check"
+]
+
+[tasks.lint]
+run = "bash mise-tasks/internal/lint"
+sources = ["apps/**/*.mjs", "packages/**/*.mjs", "scripts/**/*.mjs", "*.json", "*.yaml", "*.yml"]
+outputs = [".cache/lint.stamp"]
+
+[tasks.typecheck]
+run = "bash mise-tasks/internal/typecheck"
+sources = ["apps/**/*.mjs", "packages/**/*.mjs", "scripts/**/*.mjs", "tsconfig.json"]
+outputs = [".cache/typecheck.stamp"]
+
+[tasks.build]
+run = "bash mise-tasks/internal/build"
+sources = ["apps/**/*.mjs", "packages/**/*.mjs", "scripts/build.mjs"]
+outputs = ["dist/build-manifest.json"]
+
+[tasks."test:unit"]
+run = "bash mise-tasks/test/unit"
+sources = ["packages/**/*.mjs", "apps/**/*.mjs"]
+outputs = [".cache/test-unit.stamp"]
+
+[tasks."test:workflow"]
+run = "bash mise-tasks/test/workflow"
+sources = ["apps/api/src/**/*.mjs", "apps/api/test/workflow.integration.test.mjs", "infra/sql/schema.sql"]
+outputs = [".cache/test-workflow.stamp"]
+
+[tasks."test:replay"]
+run = "bash mise-tasks/test/replay"
+sources = ["apps/api/src/**/*.mjs", "apps/api/test/replay.integration.test.mjs", "infra/sql/schema.sql"]
+outputs = [".cache/test-replay.stamp"]
+
+[tasks."test:idempotency"]
+run = "bash mise-tasks/test/idempotency"
+sources = ["apps/api/src/**/*.mjs", "apps/api/test/idempotency.integration.test.mjs", "infra/sql/schema.sql"]
+outputs = [".cache/test-idempotency.stamp"]
+
+[tasks."test:pipeline:unit"]
+run = "bash mise-tasks/pipeline/unit"
+sources = ["packages/pipeline/src/**/*.mjs", "packages/pipeline/test/docir.unit.test.mjs"]
+outputs = [".cache/test-pipeline-unit.stamp"]
+
+[tasks."test:pipeline:smoke"]
+run = "bash mise-tasks/pipeline/smoke"
+sources = ["packages/pipeline/src/**/*.mjs", "packages/pipeline/test/smoke.integration.test.mjs", "golden/corpus/*.txt"]
+outputs = [".cache/test-pipeline-smoke.stamp"]
+
+[tasks."test:pipeline:ocr"]
+run = "bash mise-tasks/pipeline/ocr"
+sources = ["packages/pipeline/src/**/*.mjs", "packages/pipeline/test/ocr.integration.test.mjs"]
+outputs = [".cache/test-pipeline-ocr.stamp"]
+
+[tasks."test:sandbox"]
+run = "bash mise-tasks/sandbox/test"
+sources = ["packages/core/src/sandbox-runner.mjs", "packages/core/test/sandbox.integration.test.mjs"]
+outputs = [".cache/test-sandbox.stamp"]
+
+[tasks."chaos:sandbox"]
+run = "bash mise-tasks/chaos/sandbox"
+sources = ["packages/core/src/sandbox-runner.mjs", "packages/core/test/sandbox-chaos.integration.test.mjs"]
+outputs = [".cache/test-sandbox-chaos.stamp"]
+
+[tasks."golden:record"]
+run = "bash mise-tasks/golden/record"
+sources = ["packages/**/*.mjs", "apps/**/*.mjs", "golden/corpus/*.txt"]
+outputs = ["golden/expected/manifest.json", "golden/expected/timeline.json", "golden/expected/artifacts.json", "golden/expected/citations.json"]
+
+[tasks."golden:diff"]
+run = "bash mise-tasks/golden/diff"
+sources = ["golden/expected/*.json", "packages/**/*.mjs", "apps/**/*.mjs"]
+outputs = [".cache/golden-diff.stamp"]
+
+[tasks."stack:up"]
+run = "bash mise-tasks/stack/up"
+
+[tasks.up]
+run = "mise run stack:up"
+
+[tasks."stack:down"]
+run = "bash mise-tasks/stack/down"
+
+[tasks.down]
+run = "mise run stack:down"
+
+[tasks."stack:reset"]
+run = "bash mise-tasks/stack/reset"
+
+[tasks.reset]
+run = "mise run stack:reset"
+
+[tasks.psql]
+run = "bash mise-tasks/stack/psql"
+
+[tasks."smoke:ingest"]
+run = "bash mise-tasks/smoke/ingest"
+
+[tasks."ui:e2e"]
+run = "bash mise-tasks/ui/e2e"
+
+[tasks."bench:ingest"]
+run = "bash mise-tasks/bench/ingest"
+
+[tasks."bench:query"]
+run = "bash mise-tasks/bench/query"
+
+[tasks."bench:ui"]
+run = "bash mise-tasks/bench/ui"
+
+[tasks."bench:resume"]
+run = "bash mise-tasks/bench/resume"
+
+[tasks."bench:check"]
+run = "bash mise-tasks/bench/check"
+sources = ["scripts/bench-*.mjs", "spec-0/budgets.json"]
+outputs = [".cache/bench-check.stamp"]

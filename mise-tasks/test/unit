@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mise x node@24.13.1 -- node --test \
+  packages/core/test/*.unit.test.mjs \
+  packages/pipeline/test/*.unit.test.mjs \
+  packages/skills/test/*.unit.test.mjs
+mkdir -p .cache
+date +%s > .cache/test-unit.stamp

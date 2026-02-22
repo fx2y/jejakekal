@@ -1,0 +1,10 @@
+{
+  "name": "@jejakekal/pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./docir": "./src/docir.mjs",
+    "./ingest": "./src/ingest.mjs"
+  }
+}

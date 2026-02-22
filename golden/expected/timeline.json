@@ -1,0 +1,16 @@
+[
+  {
+    "payload": {
+      "docId": "golden-doc-a"
+    },
+    "phase": "completed",
+    "step": "ingest"
+  },
+  {
+    "payload": {
+      "chunks": 3
+    },
+    "phase": "completed",
+    "step": "index"
+  }
+]

@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { diffRunBundles, makeManifest, writeRunBundle } from '../src/run-bundle.mjs';
+import { freezeDeterminism } from '../src/determinism.mjs';
+
+test('run-bundle diff ignores timestamps and checks structure', async () => {
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-20T00:00:00.000Z') });
+  const leftDir = await mkdtemp(join(tmpdir(), 'bundle-left-'));
+  const rightDir = await mkdtemp(join(tmpdir(), 'bundle-right-'));
+
+  try {
+    await writeRunBundle(leftDir, {
+      manifest: makeManifest({ workflowId: 'wf-1', root: '/tmp/wf-1' }),
+      timeline: [{ step: 'a', phase: 'completed' }],
+      toolIO: [],
+      artifacts: [{ id: 'memo' }],
+      citations: [{ source: 'x' }]
+    });
+
+    unfreeze();
+    await writeRunBundle(rightDir, {
+      manifest: makeManifest({ workflowId: 'wf-1', root: '/tmp/wf-1' }),
+      timeline: [{ step: 'a', phase: 'completed' }],
+      toolIO: [],
+      artifacts: [{ id: 'memo' }],
+      citations: [{ source: 'x' }]
+    });
+
+    const diffs = await diffRunBundles(leftDir, rightDir);
+    assert.equal(diffs.length, 0);
+  } finally {
+    await rm(leftDir, { recursive: true, force: true });
+    await rm(rightDir, { recursive: true, force: true });
+  }
+});
