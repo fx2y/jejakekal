@@ -28,16 +28,8 @@ export async function startUiServer(uiPort = 4110) {
         return;
       }
 
-      const file = req.url === '/styles.css'
-        ? 'styles.css'
-        : req.url === '/app.js'
-          ? 'app.mjs'
-          : 'index.html';
-      const contentType = file.endsWith('.css')
-        ? 'text/css'
-        : file.endsWith('.mjs')
-          ? 'text/javascript'
-          : 'text/html';
+      const file = resolveStaticFile(req.url);
+      const contentType = contentTypeFor(file);
       const payload = await readFile(join(process.cwd(), 'apps/ui/src', file), 'utf8');
       res.writeHead(200, { 'content-type': contentType });
       res.end(payload);
@@ -77,6 +69,29 @@ async function readRequest(req) {
     body += chunk;
   }
   return body;
+}
+
+/**
+ * @param {string} url
+ */
+function resolveStaticFile(url) {
+  if (url === '/app.js') return 'app.mjs';
+  if (url === '/' || url === '/index.html') return 'index.html';
+
+  const name = url.startsWith('/') ? url.slice(1) : url;
+  if (!name.includes('/') && (name.endsWith('.css') || name.endsWith('.mjs'))) {
+    return name;
+  }
+  return 'index.html';
+}
+
+/**
+ * @param {string} file
+ */
+function contentTypeFor(file) {
+  if (file.endsWith('.css')) return 'text/css';
+  if (file.endsWith('.mjs')) return 'text/javascript';
+  return 'text/html';
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

@@ -1,49 +1,34 @@
+import { startRun } from './api-client.mjs';
+import { renderArtifacts, renderTimeline, setRunStatus } from './render-execution.mjs';
+
 const status = /** @type {HTMLElement|null} */ (document.getElementById('run-status'));
 const timelineEl = /** @type {HTMLElement|null} */ (document.getElementById('timeline'));
 const artifactsEl = /** @type {HTMLElement|null} */ (document.getElementById('artifacts'));
 const inputEl = /** @type {HTMLTextAreaElement|null} */ (document.getElementById('doc-input'));
 
-async function runWorkflow() {
+function requireUiElements() {
   if (!status || !timelineEl || !artifactsEl || !inputEl) {
     throw new Error('ui-elements-missing');
   }
+  return { status, timelineEl, artifactsEl, inputEl };
+}
 
-  status.dataset.state = 'running';
-  status.textContent = 'running';
+async function runWorkflow() {
+  const ui = requireUiElements();
+
+  setRunStatus(ui.status, 'running', 'running');
   const workflowId = `wf-${Date.now()}`;
+  const result = await startRun({ workflowId, source: ui.inputEl.value });
 
-  const response = await fetch('/api/run', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ workflowId, source: inputEl.value })
-  });
-
-  const result = await response.json();
-
-  timelineEl.innerHTML = '';
-  for (const row of result.timeline) {
-    const li = document.createElement('li');
-    li.textContent = `${row.step}:${row.phase}`;
-    timelineEl.append(li);
-  }
-
-  artifactsEl.innerHTML = '';
-  for (const artifact of result.artifacts) {
-    const li = document.createElement('li');
-    li.textContent = artifact.id;
-    li.dataset.artifactId = artifact.id;
-    artifactsEl.append(li);
-  }
-
-  status.dataset.state = 'done';
-  status.textContent = `done:${workflowId}`;
+  renderTimeline(ui.timelineEl, result.timeline);
+  renderArtifacts(ui.artifactsEl, result.artifacts);
+  setRunStatus(ui.status, 'done', `done:${workflowId}`);
 }
 
 document.getElementById('run-workflow')?.addEventListener('click', () => {
   runWorkflow().catch((error) => {
     if (status) {
-      status.dataset.state = 'error';
-      status.textContent = String(error);
+      setRunStatus(status, 'error', String(error));
     }
   });
 });

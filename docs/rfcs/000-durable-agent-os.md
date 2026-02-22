@@ -1,8 +1,8 @@
 # RFC-000: Durable Agent OS (Artifact-First, DBOS-Only)
 
-Status: Proposed  
-Owners: Platform  
-Audience: Staff+ Eng  
+Status: Proposed
+Owners: Platform
+Audience: Staff+ Eng
 Scope: Runtime + data + UX contract (not implementation detail bikeshedding)
 
 ## 0. One-line thesis
@@ -35,7 +35,7 @@ Current agent products optimize demo-latency, not correctness, replayability, or
 
 ## 4. Product contract (what users actually get)
 ### 4.1 Run contract
-`POST /runs` => starts workflow => returns `runId`.  
+`POST /runs` => starts workflow => returns `runId`.
 `GET /runs/:id` => timeline + artifacts + runBundlePath.
 
 No run without timeline. No successful run without >=1 artifact.

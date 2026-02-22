@@ -13,6 +13,7 @@ PGUSER = "postgres"
 PGPASSWORD = "postgres"
 PGDATABASE = "jejakekal"
 BLOB_ENDPOINT = "http://127.0.0.1:19000"
+DBOS_SYSTEM_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:55440/jejakekal"
 
 [tasks.verify]
 description = "L1 quick gate"
