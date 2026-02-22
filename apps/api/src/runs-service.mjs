@@ -68,7 +68,7 @@ export function normalizeRunStartPayload(payload) {
 
 /**
  * @param {import('pg').Client} client
- * @param {{source: string, workflowId?: string, sleepMs?: number}} params
+ * @param {{source: string, workflowId?: string, sleepMs?: number, bundlesRoot?: string}} params
  */
 export async function startRunDurably(client, params) {
   if (params.workflowId) {
@@ -78,7 +78,8 @@ export async function startRunDurably(client, params) {
   const handle = await startDefaultWorkflowRun({
     workflowId: params.workflowId,
     value: params.source,
-    sleepMs: params.sleepMs
+    sleepMs: params.sleepMs,
+    bundlesRoot: params.bundlesRoot
   });
   return { handle, runId: handle.workflowID };
 }

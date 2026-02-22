@@ -3,7 +3,8 @@ import { makeManifest, writeRunBundle } from '../../../packages/core/src/run-bun
 import { readRun } from './runs-service.mjs';
 import { toBundleTimeline } from './runs-projections.mjs';
 import { unprocessable } from './request-errors.mjs';
-import { resolveWithinRoot } from './artifact-uri.mjs';
+import { resolveBundleArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
+import { listArtifactsByRunId } from './artifacts/repository.mjs';
 
 function trimPreview(source) {
   return source.replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -19,6 +20,22 @@ export function buildIngestArtifacts(ingest) {
     { id: 'chunk-index', path: ingest.paths.chunkIndex },
     { id: 'memo', path: ingest.paths.memo }
   ];
+}
+
+/**
+ * @param {Array<{type:string, uri:string}>} rows
+ * @param {string} bundlesRoot
+ */
+function mapPersistedArtifactsForExport(rows, bundlesRoot) {
+  const order = ['raw', 'docir', 'chunk-index', 'memo'];
+  const byType = new Map(rows.map((row) => [row.type, row]));
+  return order
+    .map((type) => byType.get(type))
+    .filter(Boolean)
+    .map((row) => ({
+      id: row.type,
+      path: resolveBundleArtifactUri(bundlesRoot, row.uri)
+    }));
 }
 
 /**
@@ -47,20 +64,24 @@ export async function exportRunBundle(params) {
   const run = await readRun(params.client, params.runId);
   if (!run) return null;
 
-  const source = sourceFromRunTimeline(run.timeline);
-  if (!source) {
-    throw unprocessable('source_unrecoverable', { run_id: params.runId });
-  }
-
-  const ingestDir = resolveWithinRoot(params.bundlesRoot, params.runId, 'ingest');
-  const ingest = await ingestDocument({
-    docId: params.runId,
-    source,
-    outDir: ingestDir
-  });
-
   const bundleDir = resolveWithinRoot(params.bundlesRoot, params.runId, 'bundle');
-  const artifacts = buildIngestArtifacts(ingest);
+  const persistedArtifacts = await listArtifactsByRunId(params.client, params.runId);
+  let artifacts = mapPersistedArtifactsForExport(persistedArtifacts, params.bundlesRoot);
+  let source = sourceFromRunTimeline(run.timeline);
+  if (artifacts.length === 0) {
+    if (!source) {
+      throw unprocessable('source_unrecoverable', { run_id: params.runId });
+    }
+    const ingestDir = resolveWithinRoot(params.bundlesRoot, params.runId, 'ingest');
+    const ingest = await ingestDocument({
+      docId: params.runId,
+      source,
+      outDir: ingestDir
+    });
+    artifacts = buildIngestArtifacts(ingest);
+  } else if (!source) {
+    source = '';
+  }
   const bundleTimeline = toBundleTimeline(run.timeline);
   const manifest = makeManifest({
     workflowId: params.runId,
@@ -72,7 +93,7 @@ export async function exportRunBundle(params) {
     timeline: bundleTimeline,
     toolIO: [{ tool: 'pipeline.ingest', workflowId: params.runId }],
     artifacts,
-    citations: [{ source: 'local', confidence: 1, text: trimPreview(source) }],
+    citations: source ? [{ source: 'local', confidence: 1, text: trimPreview(source) }] : [],
     extraJsonFiles: {
       'workflow_status.json': run.header,
       'operation_outputs.json': run.timeline

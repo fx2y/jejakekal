@@ -1,19 +1,8 @@
 import { resolve, sep } from 'node:path';
 import { badRequest } from './request-errors.mjs';
 import { assertValidRunId } from './run-id.mjs';
-
-const ARTIFACT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+import { assertValidArtifactId } from './artifacts/artifact-id.mjs';
 const BUNDLE_URI_PREFIX = 'bundle://';
-
-/**
- * @param {string} value
- */
-function assertValidArtifactId(value) {
-  if (!ARTIFACT_ID_PATTERN.test(value) || value === '.' || value === '..' || value.includes('/')) {
-    throw badRequest('invalid_artifact_id', { field: 'artifact_id' });
-  }
-  return value;
-}
 
 /**
  * @param {string} value

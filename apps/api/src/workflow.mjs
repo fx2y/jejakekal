@@ -17,14 +17,15 @@ export async function readTimeline(client, workflowId) {
 }
 
 /**
- * @param {{client: import('pg').Client, workflowId:string, value:string, sleepMs?: number}} params
+ * @param {{client: import('pg').Client, workflowId:string, value:string, sleepMs?: number, bundlesRoot?: string}} params
  */
 export async function defaultWorkflow(params) {
   await ensureDbosRuntime();
   const handle = await startDefaultWorkflowRun({
     workflowId: params.workflowId,
     value: params.value,
-    sleepMs: params.sleepMs
+    sleepMs: params.sleepMs,
+    bundlesRoot: params.bundlesRoot
   });
   await handle.getResult();
   return readTimeline(params.client, handle.workflowID);

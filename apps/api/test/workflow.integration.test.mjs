@@ -66,6 +66,8 @@ test('C1 smoke: DBOS run writes dbos.workflow_status + dbos.operation_outputs', 
   assert.ok(timeline.some((row) => row.step === 'prepare'));
   assert.ok(timeline.some((row) => row.step === 'side-effect'));
   assert.ok(timeline.some((row) => row.step === 'finalize'));
+  assert.ok(timeline.some((row) => row.step === 'persist-artifacts'));
+  assert.ok(timeline.some((row) => row.step === 'artifact-count'));
 
   const header = await readWorkflowStatus(client, workflowId);
   assert.equal(header?.workflow_uuid, workflowId);
@@ -78,6 +80,64 @@ test('C1 smoke: DBOS run writes dbos.workflow_status + dbos.operation_outputs', 
     [...outputs.map((row) => row.function_id)].sort((a, b) => a - b)
   );
   assert.ok(outputs.every((row) => row.function_id >= 0));
+});
+
+test('C1 artifact core: successful run persists immutable quartet rows', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  t.after(() => unfreeze());
+
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'artifact-core-c1', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+
+  let run = null;
+  for (let i = 0; i < 80; i += 1) {
+    const pollRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}`);
+    assert.equal(pollRes.status, 200);
+    run = await pollRes.json();
+    if (run.status === 'done') break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(run?.status, 'done');
+
+  const artifacts = await client.query(
+    `SELECT id, type, prov
+     FROM artifact
+     WHERE run_id = $1
+     ORDER BY type ASC`,
+    [started.run_id]
+  );
+  assert.equal(artifacts.rows.length, 4);
+  assert.deepEqual(
+    artifacts.rows.map((row) => row.type),
+    ['chunk-index', 'docir', 'memo', 'raw']
+  );
+  for (const row of artifacts.rows) {
+    assert.equal(row.id, `${started.run_id}:${row.type}`);
+    assert.equal(typeof row.prov.hash.artifact_sha256, 'string');
+    assert.equal(typeof row.prov.hash.source_sha256, 'string');
+    assert.equal(row.prov.run_id, started.run_id);
+    assert.equal(row.prov.artifact_type, row.type);
+    assert.equal(typeof row.prov.source, 'undefined');
+    assert.equal(typeof row.prov.content, 'undefined');
+  }
+
+  await assert.rejects(
+    () => client.query('UPDATE artifact SET title = $2 WHERE id = $1', [`${started.run_id}:raw`, 'mutate']),
+    /artifact_immutable/
+  );
 });
 
 test('C2 projection mappers normalize DBOS row shapes deterministically', () => {
@@ -294,7 +354,7 @@ test('P0 workflowId dedup rejects payload mismatch with 409', async (t) => {
   });
 });
 
-test('P1 export fails with 422 when source cannot be recovered from timeline', async (t) => {
+test('P1 export reads persisted artifacts even when source cannot be recovered from timeline', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
   const api = await startApiServer(0);
@@ -330,11 +390,13 @@ test('P1 export fails with 422 when source cannot be recovered from timeline', a
   );
 
   const exportRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/export`);
-  assert.equal(exportRes.status, 422);
-  assert.deepEqual(await exportRes.json(), {
-    error: 'source_unrecoverable',
-    run_id: started.run_id
-  });
+  assert.equal(exportRes.status, 200);
+  const exported = await exportRes.json();
+  assert.equal(exported.run_id, started.run_id);
+  assert.deepEqual(
+    exported.artifacts.map((row) => row.id),
+    ['raw', 'docir', 'chunk-index', 'memo']
+  );
 });
 
 test('P2 api close removes temporary bundles root by default', async (t) => {

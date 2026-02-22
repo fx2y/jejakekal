@@ -1,6 +1,14 @@
 import { DBOS, DBOSWorkflowConflictError } from '@dbos-inc/dbos-sdk';
+import { readFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { sha256 } from '../../../packages/core/src/hash.mjs';
+import { ingestDocument } from '../../../packages/pipeline/src/ingest.mjs';
 import { makeClient } from './db.mjs';
 import { callIdempotentEffect } from './effects.mjs';
+import { makeBundleArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
+import { buildArtifactProvenance, hashSource } from './artifacts/provenance.mjs';
+import { countArtifactsByRunId, insertArtifact } from './artifacts/repository.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number }) => Promise<unknown>) | undefined} */
@@ -38,6 +46,84 @@ async function finalizeStep() {
   return { ok: true };
 }
 
+/**
+ * @param {{workflowId:string, source:string, bundlesRoot:string}} input
+ */
+async function persistArtifactsStep(input) {
+  const ingestDir = resolveWithinRoot(input.bundlesRoot, input.workflowId, 'ingest');
+  const ingest = await ingestDocument({
+    docId: input.workflowId,
+    source: input.source,
+    outDir: ingestDir
+  });
+  const sourceSha256 = hashSource(input.source);
+  const rows = [
+    {
+      type: 'raw',
+      format: 'text/plain',
+      title: 'Raw Source',
+      path: ingest.paths.raw
+    },
+    {
+      type: 'docir',
+      format: 'application/json',
+      title: 'DocIR',
+      path: ingest.paths.docir
+    },
+    {
+      type: 'chunk-index',
+      format: 'application/json',
+      title: 'Chunk Index',
+      path: ingest.paths.chunkIndex
+    },
+    {
+      type: 'memo',
+      format: 'application/json',
+      title: 'Pipeline Memo',
+      path: ingest.paths.memo
+    }
+  ];
+
+  return withAppClient(async (client) => {
+    let inserted = 0;
+    for (const row of rows) {
+      const artifactId = `${input.workflowId}:${row.type}`;
+      const payload = await readFile(row.path);
+      const artifactSha256 = sha256(payload);
+      const uri = makeBundleArtifactUri({
+        runId: input.workflowId,
+        artifactId,
+        relativePath: `ingest/${basename(row.path)}`
+      });
+      const prov = buildArtifactProvenance({
+        runId: input.workflowId,
+        artifactType: row.type,
+        artifactSha256,
+        sourceSha256
+      });
+      const persisted = await insertArtifact(client, {
+        id: artifactId,
+        run_id: input.workflowId,
+        type: row.type,
+        format: row.format,
+        uri,
+        sha256: artifactSha256,
+        title: row.title,
+        prov
+      });
+      if (persisted) inserted += 1;
+    }
+    return { inserted, total: rows.length };
+  });
+}
+
+/**
+ * @param {string} workflowId
+ */
+async function countArtifactsStep(workflowId) {
+  return withAppClient(async (client) => countArtifactsByRunId(client, workflowId));
+}
+
 async function flakyStep(failUntilAttempt) {
   const workflowId = DBOS.workflowID ?? 'unknown-workflow';
   const currentAttempt = (flakyAttemptByWorkflow.get(workflowId) ?? 0) + 1;
@@ -54,7 +140,31 @@ async function defaultWorkflowImpl(input) {
   await DBOS.sleep(Math.max(1, Number(input.sleepMs ?? 1)));
   const sideEffect = await DBOS.runStep(sideEffectStep, { name: 'side-effect' });
   const finalize = await DBOS.runStep(finalizeStep, { name: 'finalize' });
-  return { workflowId: DBOS.workflowID, sideEffect, finalize };
+  const workflowId = DBOS.workflowID ?? 'unknown-workflow';
+  const bundlesRoot =
+    typeof input.bundlesRoot === 'string' && input.bundlesRoot.length > 0
+      ? input.bundlesRoot
+      : join(tmpdir(), 'jejakekal-run-bundles');
+  const persisted = await DBOS.runStep(
+    () =>
+      persistArtifactsStep({
+        workflowId,
+        source: input.value,
+        bundlesRoot
+      }),
+    {
+      name: 'persist-artifacts',
+      retriesAllowed: true,
+      intervalSeconds: 1,
+      backoffRate: 2,
+      maxAttempts: 3
+    }
+  );
+  const artifactCount = await DBOS.runStep(() => countArtifactsStep(workflowId), { name: 'artifact-count' });
+  if (artifactCount < 1) {
+    throw new Error('FAILED_NO_ARTIFACT');
+  }
+  return { workflowId, sideEffect, finalize, persisted };
 }
 
 async function flakyRetryWorkflowImpl(input) {
@@ -99,15 +209,18 @@ export function registerDbosWorkflows() {
 }
 
 /**
- * @param {{workflowId?: string, value: string, sleepMs?: number}} params
+ * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string}} params
  */
 export async function startDefaultWorkflowRun(params) {
   registerDbosWorkflows();
   const workflowFn =
-    /** @type {(input: { value: string, sleepMs?: number }) => Promise<unknown>} */ (defaultWorkflowFn);
+    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot?: string }) => Promise<unknown>} */ (
+      defaultWorkflowFn
+    );
   return startWorkflowWithConflictRecovery(workflowFn, params, {
     value: params.value,
-    sleepMs: params.sleepMs
+    sleepMs: params.sleepMs,
+    bundlesRoot: params.bundlesRoot
   });
 }
 

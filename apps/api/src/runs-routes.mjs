@@ -18,7 +18,7 @@ export async function handleRunsRoute(req, res, ctx) {
 
   if (req.method === 'POST' && pathname === '/runs') {
     const payload = normalizeRunStartPayload(await readJsonRequest(req));
-    const { runId } = await startRunDurably(ctx.client, payload);
+    const { runId } = await startRunDurably(ctx.client, { ...payload, bundlesRoot: ctx.bundlesRoot });
     const run = await readRun(ctx.client, runId);
     sendJson(res, 202, {
       run_id: runId,
