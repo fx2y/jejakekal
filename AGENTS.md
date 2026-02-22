@@ -41,9 +41,10 @@ Hard meta-rules:
 
 ## Product Contracts To Freeze
 
-- API: canonical `/runs*` + `/healthz`; no `/api/*` resurrection.
+- API: sprint2 additive surface is `/runs*` + `/artifacts*` + `/healthz`; `/runs*` removal blocked before 2026-06-30 and requires explicit migration proof; no `/api/*` resurrection.
 - Run payload: stable keys (`run_id,status,dbos_status,header,timeline`), export adds `artifacts` + `run_bundle_path`.
-- UI: fixed plane IDs + `#run-status[data-state]` FSM (`idle|running|done|error`).
+- Run start body migration: legacy `{source}` and canonical `{intent,args}` may co-exist only in a time-boxed compat window; no silent default-source synthesis; compat exit requires explicit proof.
+- UI: fixed plane IDs + `#run-status[data-state]` FSM (`idle|running|done|error`); additive aliases `#conv/#artifacts/#exec` are wrappers only, never replacements.
 - Artifact vocabulary: `raw,docir,chunk-index,memo` (`chunk-index` only).
 - Run bundle: fixed v0 set + additive DBOS snapshots; normalized root/time for cross-machine diffs.
 - Workflow truth: DBOS tables (`dbos.workflow_status`, `dbos.operation_outputs`); projections must honor DBOS shape quirks.
@@ -52,7 +53,7 @@ Hard meta-rules:
 
 - Ship proof with change (test and/or golden and/or perf).
 - Update durable decisions in `spec-*/00-learnings.jsonl`.
-- Update execution ledger in `spec-*/01-tasks.jsonl` or active cycle tasks file (e.g. `spec-0/02-tasks.jsonl`).
+- Update execution ledger in `spec-*/01-tasks.jsonl` or active cycle tasks file (e.g. `spec-0/02-tasks.jsonl`, `spec-0/03-tasks.jsonl`).
 - Update operator recipe when UX/ops flow changes (`spec-*/02-tutorial.jsonl` when present).
 - New failure mode => new rule/recipe in `.codex/rules/*` in same change.
 - Behavior-changing PR without proof+log updates is incomplete.

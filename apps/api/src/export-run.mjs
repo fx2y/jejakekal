@@ -1,9 +1,9 @@
-import { resolve, sep } from 'node:path';
 import { ingestDocument } from '../../../packages/pipeline/src/ingest.mjs';
 import { makeManifest, writeRunBundle } from '../../../packages/core/src/run-bundle.mjs';
 import { readRun } from './runs-service.mjs';
 import { toBundleTimeline } from './runs-projections.mjs';
-import { unprocessable, badRequest } from './request-errors.mjs';
+import { unprocessable } from './request-errors.mjs';
+import { resolveWithinRoot } from './artifact-uri.mjs';
 
 function trimPreview(source) {
   return source.replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -41,19 +41,6 @@ export function sourceFromRunTimeline(timeline) {
 }
 
 /**
- * @param {string} root
- * @param {...string} parts
- */
-function resolveInsideRoot(root, ...parts) {
-  const rootPath = resolve(root);
-  const targetPath = resolve(rootPath, ...parts);
-  if (targetPath !== rootPath && !targetPath.startsWith(`${rootPath}${sep}`)) {
-    throw badRequest('invalid_run_id', { field: 'run_id' });
-  }
-  return targetPath;
-}
-
-/**
  * @param {{client: import('pg').Client, bundlesRoot: string, runId: string}} params
  */
 export async function exportRunBundle(params) {
@@ -65,14 +52,14 @@ export async function exportRunBundle(params) {
     throw unprocessable('source_unrecoverable', { run_id: params.runId });
   }
 
-  const ingestDir = resolveInsideRoot(params.bundlesRoot, params.runId, 'ingest');
+  const ingestDir = resolveWithinRoot(params.bundlesRoot, params.runId, 'ingest');
   const ingest = await ingestDocument({
     docId: params.runId,
     source,
     outDir: ingestDir
   });
 
-  const bundleDir = resolveInsideRoot(params.bundlesRoot, params.runId, 'bundle');
+  const bundleDir = resolveWithinRoot(params.bundlesRoot, params.runId, 'bundle');
   const artifacts = buildIngestArtifacts(ingest);
   const bundleTimeline = toBundleTimeline(run.timeline);
   const manifest = makeManifest({

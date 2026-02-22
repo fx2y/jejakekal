@@ -1,29 +1,11 @@
 import { readJsonRequest, sendJson } from './http.mjs';
 import { exportRunBundle } from './export-run.mjs';
 import { readRun, normalizeRunStartPayload, startRunDurably } from './runs-service.mjs';
-import { decodeAndValidateRunId } from './run-id.mjs';
-
-function getPathname(url) {
-  const queryIndex = url.indexOf('?');
-  return queryIndex === -1 ? url : url.slice(0, queryIndex);
-}
-
-function decodeRunId(pathname) {
-  const prefix = '/runs/';
-  if (!pathname.startsWith(prefix)) return null;
-  const raw = pathname.slice(prefix.length);
-  if (!raw || raw.includes('/')) return null;
-  return decodeAndValidateRunId(raw);
-}
-
-function decodeRunExportId(pathname) {
-  const prefix = '/runs/';
-  const suffix = '/export';
-  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
-  const raw = pathname.slice(prefix.length, pathname.length - suffix.length);
-  if (!raw || raw.includes('/')) return null;
-  return decodeAndValidateRunId(raw);
-}
+import {
+  decodeRunExportRouteId,
+  decodeRunRouteId,
+  getRequestPathname
+} from './routes/runs-paths.mjs';
 
 /**
  * @param {import('node:http').IncomingMessage} req
@@ -32,7 +14,7 @@ function decodeRunExportId(pathname) {
  */
 export async function handleRunsRoute(req, res, ctx) {
   if (!req.url) return false;
-  const pathname = getPathname(req.url);
+  const pathname = getRequestPathname(req.url);
 
   if (req.method === 'POST' && pathname === '/runs') {
     const payload = normalizeRunStartPayload(await readJsonRequest(req));
@@ -47,7 +29,7 @@ export async function handleRunsRoute(req, res, ctx) {
   }
 
   if (req.method === 'GET') {
-    const exportRunId = decodeRunExportId(pathname);
+    const exportRunId = decodeRunExportRouteId(pathname);
     if (exportRunId) {
       const exported = await exportRunBundle({
         client: ctx.client,
@@ -62,7 +44,7 @@ export async function handleRunsRoute(req, res, ctx) {
       return true;
     }
 
-    const runId = decodeRunId(pathname);
+    const runId = decodeRunRouteId(pathname);
     if (runId) {
       const run = await readRun(ctx.client, runId);
       if (!run) {

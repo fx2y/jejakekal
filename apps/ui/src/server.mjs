@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { startApiServer } from '../../api/src/server.mjs';
 import { closeServer, listenLocal } from '../../api/src/http.mjs';
 import { onceAsync } from '../../../packages/core/src/once-async.mjs';
+import { isHxHistoryRestoreRequest, isHxRequest, shouldServeFullDocument } from './hx-request.mjs';
 
 /**
  * @param {number} uiPort
@@ -16,6 +17,19 @@ export async function startUiServer(uiPort = 4110, opts = {}) {
     try {
       if (!req.url) {
         res.writeHead(400).end('missing url');
+        return;
+      }
+      const pathname = getPathname(req.url);
+
+      if (req.method === 'GET' && pathname === '/__probe/hx-branch') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            hx_request: isHxRequest(req.headers),
+            hx_history_restore_request: isHxHistoryRestoreRequest(req.headers),
+            full_document: shouldServeFullDocument(req.headers)
+          })
+        );
         return;
       }
 
@@ -64,6 +78,14 @@ async function readRequest(req) {
     body += chunk;
   }
   return body;
+}
+
+/**
+ * @param {string} url
+ */
+function getPathname(url) {
+  const queryIndex = url.indexOf('?');
+  return queryIndex === -1 ? url : url.slice(0, queryIndex);
 }
 
 /**

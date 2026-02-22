@@ -17,6 +17,36 @@ test.afterAll(async () => {
   await runtime?.close();
 });
 
+test('C0 HX branch probe reports full vs fragment decision', async ({ request }) => {
+  const nonHx = await request.get(`${baseUrl}/__probe/hx-branch`);
+  expect(nonHx.status()).toBe(200);
+  expect(await nonHx.json()).toEqual({
+    hx_request: false,
+    hx_history_restore_request: false,
+    full_document: true
+  });
+
+  const hx = await request.get(`${baseUrl}/__probe/hx-branch`, {
+    headers: { 'HX-Request': 'true' }
+  });
+  expect(hx.status()).toBe(200);
+  expect(await hx.json()).toEqual({
+    hx_request: true,
+    hx_history_restore_request: false,
+    full_document: false
+  });
+
+  const hxRestore = await request.get(`${baseUrl}/__probe/hx-branch`, {
+    headers: { 'HX-Request': 'true', 'HX-History-Restore-Request': 'true' }
+  });
+  expect(hxRestore.status()).toBe(200);
+  expect(await hxRestore.json()).toEqual({
+    hx_request: true,
+    hx_history_restore_request: true,
+    full_document: true
+  });
+});
+
 test('3-plane product promise path (ingest -> timeline -> artifacts)', async ({ page }) => {
   await page.goto(baseUrl);
 
