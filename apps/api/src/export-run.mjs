@@ -11,7 +11,19 @@ function trimPreview(source) {
 }
 
 /**
+ * @typedef {{
+ *   id: string,
+ *   path: string,
+ *   type?: string,
+ *   uri?: string,
+ *   sha256?: string,
+ *   prov?: Record<string, unknown>
+ * }} ExportArtifactRef
+ */
+
+/**
  * @param {{ paths: { raw: string, docir: string, chunkIndex: string, memo: string } }} ingest
+ * @returns {ExportArtifactRef[]}
  */
 export function buildIngestArtifacts(ingest) {
   return [
@@ -23,8 +35,9 @@ export function buildIngestArtifacts(ingest) {
 }
 
 /**
- * @param {Array<{type:string, uri:string}>} rows
+ * @param {Array<{id:string,type:string,uri:string,sha256:string,prov:Record<string, unknown>}>} rows
  * @param {string} bundlesRoot
+ * @returns {ExportArtifactRef[]}
  */
 function mapPersistedArtifactsForExport(rows, bundlesRoot) {
   const order = ['raw', 'docir', 'chunk-index', 'memo'];
@@ -32,10 +45,17 @@ function mapPersistedArtifactsForExport(rows, bundlesRoot) {
   return order
     .map((type) => byType.get(type))
     .filter(Boolean)
-    .map((row) => ({
-      id: row.type,
-      path: resolveBundleArtifactUri(bundlesRoot, row.uri)
-    }));
+    .map((row) => {
+      const path = resolveBundleArtifactUri(bundlesRoot, row.uri);
+      return {
+        id: row.type,
+        type: row.type,
+        path,
+        uri: row.uri,
+        sha256: row.sha256,
+        prov: row.prov
+      };
+    });
 }
 
 /**
@@ -83,9 +103,29 @@ export async function exportRunBundle(params) {
     source = '';
   }
   const bundleTimeline = toBundleTimeline(run.timeline);
+  const stepSummaries = run.timeline.map((row) => ({
+    function_id: row.function_id,
+    function_name: row.function_name,
+    status: row.error ? 'error' : 'ok',
+    attempt: row.attempt ?? 1,
+    duration_ms: row.duration_ms ?? null,
+    io_hashes: Array.isArray(row.io_hashes) ? row.io_hashes : []
+  }));
+  const artifactRefs = artifacts.map((artifact) => ({
+    id: artifact.id,
+    type: artifact.type ?? artifact.id,
+    sha256: artifact.sha256 ?? null,
+    uri: artifact.uri ?? null
+  }));
   const manifest = makeManifest({
     workflowId: params.runId,
-    root: '<run-bundle-root>'
+    root: '<run-bundle-root>',
+    createdAt:
+      typeof run.header?.created_at === 'string' && run.header.created_at.length > 0
+        ? run.header.created_at
+        : undefined,
+    artifactRefs,
+    stepSummaries
   });
 
   await writeRunBundle(bundleDir, {
@@ -96,7 +136,14 @@ export async function exportRunBundle(params) {
     citations: source ? [{ source: 'local', confidence: 1, text: trimPreview(source) }] : [],
     extraJsonFiles: {
       'workflow_status.json': run.header,
-      'operation_outputs.json': run.timeline
+      'operation_outputs.json': run.timeline,
+      'artifact_provenance.json': artifacts.map((artifact) => ({
+        id: artifact.id,
+        type: artifact.type ?? artifact.id,
+        sha256: artifact.sha256 ?? null,
+        uri: artifact.uri ?? null,
+        prov: artifact.prov ?? {}
+      }))
     }
   });
 

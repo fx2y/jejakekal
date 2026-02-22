@@ -6,8 +6,9 @@ import { closeServer, listenLocal } from '../../api/src/http.mjs';
 import { onceAsync } from '../../../packages/core/src/once-async.mjs';
 import { decodeArtifactRouteId } from '../../api/src/routes/artifacts-paths.mjs';
 import { decodeRunRouteId, getRequestPathname } from '../../api/src/routes/runs-paths.mjs';
+import { decodeAndValidateRunId } from '../../api/src/run-id.mjs';
 import { shouldServeFullDocument } from './hx-request.mjs';
-import { getArtifact, getRun, listArtifacts, startRun } from './ui-api-client.mjs';
+import { getArtifact, getRun, listArtifacts, resumeRun, startRun } from './ui-api-client.mjs';
 import {
   renderArtifactViewer,
   renderArtifactsPane,
@@ -87,13 +88,32 @@ function readFilters(url) {
     queryIndex === -1 ? new URLSearchParams() : new URLSearchParams(url.slice(queryIndex + 1));
   const sleepRaw = query.get('sleepMs');
   const sleepMs = sleepRaw ? Number(sleepRaw) : undefined;
+  const stepRaw = query.get('step');
+  const step = stepRaw == null ? undefined : Number(stepRaw);
   return {
     type: query.get('type') ?? undefined,
     visibility: query.get('visibility') ?? undefined,
     q: query.get('q') ?? undefined,
     sleepMs: Number.isFinite(sleepMs) ? sleepMs : undefined,
+    step: Number.isFinite(step) ? Math.max(0, Math.trunc(step)) : undefined,
     queryString: query.toString()
   };
+}
+
+/**
+ * @param {string} pathname
+ */
+function decodeUiResumeRouteRunId(pathname) {
+  const prefix = '/ui/runs/';
+  const suffix = '/resume';
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
+  const raw = pathname.slice(prefix.length, pathname.length - suffix.length);
+  if (!raw || raw.includes('/')) return null;
+  try {
+    return decodeAndValidateRunId(raw);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -190,6 +210,40 @@ async function handleUiRoutes(req, res, ctx) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(fragment);
     return true;
+  }
+
+  if (req.method === 'POST') {
+    const resumeRunId = decodeUiResumeRouteRunId(pathname);
+    if (resumeRunId) {
+      const resumed = await resumeRun(ctx.apiPort, resumeRunId);
+      const state = await loadUiState(ctx.apiPort, resumeRunId, filters);
+      const status = statusModel(state.run);
+      const conv = resumed.ok
+        ? renderConversationPane(status.state, status.text)
+        : renderConversationPane('error', `error:resume:${resumed.status}`);
+      const panes = {
+        conv: conv.replace('<aside id="conv">', '<aside id="conv" hx-swap-oob="true">'),
+        exec: renderExecutionPane(state.run, filters),
+        artifacts: renderArtifactsPane(state.artifacts, filters),
+        statusState: resumed.ok ? status.state : 'error',
+        statusText: resumed.ok ? status.text : `error:resume:${resumed.status}`
+      };
+      if (shouldServeFullDocument(req.headers)) {
+        const page = renderPage({
+          title: state.run ? `Run ${state.run.run_id}` : 'Jejakekal Harness',
+          conv: renderConversationPane(panes.statusState, panes.statusText),
+          exec: renderExecutionPane(state.run, filters),
+          artifacts: renderArtifactsPane(state.artifacts, filters)
+        });
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(page);
+        return true;
+      }
+      const fragment = renderCommandFragment(panes);
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(fragment);
+      return true;
+    }
   }
 
   if (req.method === 'GET') {
@@ -319,7 +373,9 @@ function shouldProxy(method, url) {
   if (method === 'GET') {
     const pathname = getRequestPathname(url);
     if (pathname === '/runs' || pathname === '/artifacts') return true;
-    if (pathname.startsWith('/runs/') && !pathname.endsWith('/poll')) return pathname.endsWith('/export');
+    if (pathname.startsWith('/runs/') && !pathname.endsWith('/poll')) {
+      return pathname.endsWith('/export') || pathname.endsWith('/bundle') || pathname.endsWith('/bundle.zip');
+    }
     if (pathname.startsWith('/artifacts/') && pathname.endsWith('/download')) return true;
     return url === '/healthz';
   }

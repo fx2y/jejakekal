@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { sha256 } from '../src/hash.mjs';
+import { createDeterministicZip, listZipEntries } from '../src/deterministic-zip.mjs';
 import { diffRunBundles, makeManifest, writeRunBundle } from '../src/run-bundle.mjs';
 import { freezeDeterminism } from '../src/determinism.mjs';
 
@@ -37,4 +39,21 @@ test('run-bundle diff ignores timestamps and checks structure', async () => {
     await rm(leftDir, { recursive: true, force: true });
     await rm(rightDir, { recursive: true, force: true });
   }
+});
+
+test('deterministic-zip keeps byte identity and sorted entry list', () => {
+  const first = createDeterministicZip([
+    { name: 'b.txt', data: 'B' },
+    { name: 'a.txt', data: 'A' }
+  ]);
+  const second = createDeterministicZip([
+    { name: 'a.txt', data: 'A' },
+    { name: 'b.txt', data: 'B' }
+  ]);
+
+  assert.equal(sha256(first), sha256(second));
+  assert.deepEqual(
+    listZipEntries(first).map((entry) => entry.name),
+    ['a.txt', 'b.txt']
+  );
 });

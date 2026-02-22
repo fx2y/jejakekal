@@ -9,6 +9,8 @@ import { defaultWorkflow, readOperationOutputs, readWorkflowStatus } from '../sr
 import { setupDbOrSkip } from './helpers.mjs';
 import { freezeDeterminism } from '../../../packages/core/src/determinism.mjs';
 import { readBundle } from '../../../packages/core/src/run-bundle.mjs';
+import { sha256 } from '../../../packages/core/src/hash.mjs';
+import { listZipEntries } from '../../../packages/core/src/deterministic-zip.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -177,6 +179,8 @@ test('C2 projection mappers normalize DBOS row shapes deterministically', () => 
   });
   assert.equal(step.function_id, 3);
   assert.equal(step.started_at_epoch_ms, 100);
+  assert.equal(step.duration_ms, 100);
+  assert.equal(step.attempt, 1);
   assert.deepEqual(step.output, { ok: true });
 
   assert.equal(mapDbosStatusToApiStatus('SUCCESS'), 'done');
@@ -234,8 +238,11 @@ test('C2 canonical /runs is durable-start async and GET /runs/:id projects order
   assert.ok(run.timeline.some((row) => row.function_name === 'prepare'));
   assert.ok(run.timeline.some((row) => row.function_name === 'side-effect'));
   assert.ok(run.timeline.some((row) => row.function_name === 'finalize'));
+  assert.ok(run.timeline.every((row) => typeof row.attempt === 'number'));
+  assert.ok(run.timeline.some((row) => Array.isArray(row.io_hashes)));
   assert.ok(Array.isArray(run.artifacts));
   assert.equal(run.artifacts.length, 4);
+  assert.equal(typeof run.artifacts[0].prov, 'object');
 });
 
 test('C2 payload guards: no default source fallback and invalid command typed 400', async (t) => {
@@ -437,6 +444,63 @@ test('C3 export endpoint writes additive DBOS snapshot bundle for offline recons
     run.timeline.map((row) => row.function_id)
   );
   assert.equal(bundle['operation_outputs.json'][0].output.source, source);
+  assert.ok(bundle['artifact_provenance.json']);
+  assert.ok(Array.isArray(bundle['manifest.json'].artifact_refs));
+  assert.ok(Array.isArray(bundle['manifest.json'].step_summaries));
+});
+
+test('C4 bundle endpoint is deterministic and preserves /export compatibility', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  t.after(() => unfreeze());
+
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'bundle-c4', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+
+  const firstBundleRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/bundle`);
+  assert.equal(firstBundleRes.status, 200);
+  assert.equal(firstBundleRes.headers.get('content-type'), 'application/zip');
+  const firstBundle = Buffer.from(await firstBundleRes.arrayBuffer());
+
+  const secondBundleRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/bundle.zip`);
+  assert.equal(secondBundleRes.status, 200);
+  assert.equal(secondBundleRes.headers.get('content-type'), 'application/zip');
+  const secondBundle = Buffer.from(await secondBundleRes.arrayBuffer());
+
+  assert.equal(sha256(firstBundle), sha256(secondBundle));
+  assert.deepEqual(
+    listZipEntries(firstBundle).map((entry) => entry.name),
+    [
+      'artifact_provenance.json',
+      'artifacts.json',
+      'citations.json',
+      'manifest.json',
+      'operation_outputs.json',
+      'timeline.json',
+      'tool-io.json',
+      'workflow_status.json'
+    ]
+  );
+
+  const exportRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/export`);
+  assert.equal(exportRes.status, 200);
+  const exported = await exportRes.json();
+  assert.equal(exported.run_id, started.run_id);
+  assert.equal(typeof exported.run_bundle_path, 'string');
 });
 
 test('P0 malformed JSON on POST /runs returns 400 invalid_json', async (t) => {

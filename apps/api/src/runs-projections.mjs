@@ -15,6 +15,45 @@ function parseDbosCell(value) {
 }
 
 /**
+ * @param {unknown} output
+ */
+function readAttempt(output) {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return 1;
+  const raw = /** @type {Record<string, unknown>} */ (output).attempt;
+  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.trunc(parsed));
+}
+
+/**
+ * @param {Array<ReturnType<typeof import('./artifacts/repository.mjs').mapArtifactRow>>} artifacts
+ */
+function buildStepHints(artifacts) {
+  const hashesByStep = new Map();
+  const costByStep = new Map();
+  for (const artifact of artifacts) {
+    const prov = artifact.prov && typeof artifact.prov === 'object' ? artifact.prov : {};
+    const producerStep = typeof prov.producer_step === 'string' ? prov.producer_step : null;
+    if (!producerStep) continue;
+    const hash = prov.hash && typeof prov.hash === 'object' ? prov.hash : {};
+    const artifactHash =
+      typeof hash.artifact_sha256 === 'string' && hash.artifact_sha256.length > 0
+        ? hash.artifact_sha256
+        : null;
+    const sourceHash =
+      typeof hash.source_sha256 === 'string' && hash.source_sha256.length > 0 ? hash.source_sha256 : null;
+    const hashes = hashesByStep.get(producerStep) ?? new Set();
+    if (artifactHash) hashes.add(artifactHash);
+    if (sourceHash) hashes.add(sourceHash);
+    hashesByStep.set(producerStep, hashes);
+    if (!costByStep.has(producerStep) && prov.cost != null) {
+      costByStep.set(producerStep, prov.cost);
+    }
+  }
+  return { hashesByStep, costByStep };
+}
+
+/**
  * @param {Record<string, unknown>} row
  */
 export function mapWorkflowStatusRow(row) {
@@ -34,16 +73,21 @@ export function mapWorkflowStatusRow(row) {
  * @param {Record<string, unknown>} row
  */
 export function mapOperationOutputRow(row) {
+  const startedAt = row.started_at_epoch_ms == null ? null : Number(row.started_at_epoch_ms);
+  const completedAt = row.completed_at_epoch_ms == null ? null : Number(row.completed_at_epoch_ms);
+  const output = parseDbosCell(row.output);
+  const error = parseDbosCell(row.error);
   return {
     workflow_uuid: String(row.workflow_uuid),
     function_id: Number(row.function_id),
     function_name: String(row.function_name),
-    started_at_epoch_ms:
-      row.started_at_epoch_ms == null ? null : Number(row.started_at_epoch_ms),
-    completed_at_epoch_ms:
-      row.completed_at_epoch_ms == null ? null : Number(row.completed_at_epoch_ms),
-    output: parseDbosCell(row.output),
-    error: parseDbosCell(row.error)
+    started_at_epoch_ms: startedAt,
+    completed_at_epoch_ms: completedAt,
+    duration_ms:
+      startedAt == null || completedAt == null ? null : Math.max(0, Math.trunc(completedAt - startedAt)),
+    attempt: readAttempt(output),
+    output,
+    error
   };
 }
 
@@ -105,15 +149,40 @@ export async function getRunSteps(client, workflowId) {
 export async function getRunProjection(client, workflowId) {
   const header = await getRunHeader(client, workflowId);
   if (!header) return null;
-  const timeline = await getRunSteps(client, workflowId);
+  const baseTimeline = await getRunSteps(client, workflowId);
   const artifacts = await listArtifactsByRunId(client, workflowId);
+  const functionIdByName = new Map(baseTimeline.map((row) => [row.function_name, row.function_id]));
+  const { hashesByStep, costByStep } = buildStepHints(artifacts);
+  const timeline = baseTimeline.map((row) => ({
+    ...row,
+    io_hashes: [...(hashesByStep.get(row.function_name) ?? new Set())].sort(),
+    cost: costByStep.get(row.function_name) ?? null
+  }));
+  const projectedArtifacts = artifacts.map((artifact) => {
+    const prov = artifact.prov && typeof artifact.prov === 'object' ? artifact.prov : {};
+    const producerStep = typeof prov.producer_step === 'string' ? prov.producer_step : null;
+    const producerFunctionId =
+      producerStep != null && functionIdByName.has(producerStep)
+        ? functionIdByName.get(producerStep)
+        : null;
+    return toArtifactListItem({
+      ...artifact,
+      prov:
+        producerFunctionId == null
+          ? prov
+          : {
+              ...prov,
+              producer_function_id: producerFunctionId
+            }
+    });
+  });
   return {
     run_id: workflowId,
     status: mapDbosStatusToApiStatus(header.status),
     dbos_status: header.status,
     header,
     timeline,
-    artifacts: artifacts.map((artifact) => toArtifactListItem(artifact))
+    artifacts: projectedArtifacts
   };
 }
 

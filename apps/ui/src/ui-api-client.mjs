@@ -40,6 +40,14 @@ export async function getRun(apiPort, runId) {
 
 /**
  * @param {number} apiPort
+ * @param {string} runId
+ */
+export async function resumeRun(apiPort, runId) {
+  return callApi(apiPort, `/runs/${encodeURIComponent(runId)}/resume`, { method: 'POST' });
+}
+
+/**
+ * @param {number} apiPort
  * @param {string} query
  */
 export async function listArtifacts(apiPort, query = '') {

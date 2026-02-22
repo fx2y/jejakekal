@@ -29,6 +29,15 @@ export function decodeRunExportRouteId(pathname) {
 /**
  * @param {string} pathname
  */
+export function decodeRunBundleRouteId(pathname) {
+  const bundleZip = decodeRunRouteIdWithSuffix(pathname, '/bundle.zip');
+  if (bundleZip) return bundleZip;
+  return decodeRunRouteIdWithSuffix(pathname, '/bundle');
+}
+
+/**
+ * @param {string} pathname
+ */
 export function decodeRunResumeRouteId(pathname) {
   return decodeRunRouteIdWithSuffix(pathname, '/resume');
 }

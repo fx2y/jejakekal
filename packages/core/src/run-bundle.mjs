@@ -9,7 +9,9 @@ import { sha256 } from './hash.mjs';
  * schemaVersion: string,
  * locale: string,
  * timezone: string,
- * root: string
+ * root: string,
+ * artifact_refs?: unknown[],
+ * step_summaries?: unknown[]
  * }} RunManifest
  */
 
@@ -47,17 +49,23 @@ async function ensureEmptyDir(dir) {
 }
 
 /**
- * @param {{workflowId: string, root: string, schemaVersion?: string}} opts
+ * @param {{workflowId: string, root: string, schemaVersion?: string, createdAt?: string, artifactRefs?: unknown[], stepSummaries?: unknown[]}} opts
  * @returns {RunManifest}
  */
 export function makeManifest(opts) {
+  const createdAt =
+    typeof opts.createdAt === 'string' && opts.createdAt.length > 0
+      ? opts.createdAt
+      : new Date(Date.now()).toISOString();
   return {
     workflowId: opts.workflowId,
-    createdAt: new Date(Date.now()).toISOString(),
+    createdAt,
     schemaVersion: opts.schemaVersion ?? 'run-bundle-v0',
     locale: 'C',
     timezone: 'UTC',
-    root: opts.root
+    root: opts.root,
+    ...(Array.isArray(opts.artifactRefs) ? { artifact_refs: opts.artifactRefs } : {}),
+    ...(Array.isArray(opts.stepSummaries) ? { step_summaries: opts.stepSummaries } : {})
   };
 }
 

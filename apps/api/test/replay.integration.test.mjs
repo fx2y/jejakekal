@@ -51,6 +51,24 @@ async function runDbosCli(command, runId) {
   return parseCliJson(stdout);
 }
 
+async function runDbosCliNoOutput(command, runId) {
+  await execFile(
+    'pnpm',
+    [
+      '--filter',
+      '@jejakekal/api',
+      'exec',
+      'dbos',
+      'workflow',
+      command,
+      '-s',
+      String(process.env.DBOS_SYSTEM_DATABASE_URL),
+      runId
+    ],
+    { cwd: process.cwd() }
+  );
+}
+
 test('C4 kill9: SIGKILL during DBOS.sleep resumes from last completed step', async (t) => {
   if (!(await setupDbOrSkip(t))) return;
   const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
@@ -175,6 +193,48 @@ test('C4 CLI/API parity: dbos workflow get/steps matches /runs projection semant
       function_name: step.function_name
     }))
   );
+});
+
+test('C4 resume endpoint resumes CANCELLED run without duplicating completed steps', async (t) => {
+  if (!(await setupDbOrSkip(t))) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  t.after(() => unfreeze());
+
+  const api = await startApiProcess();
+  t.after(async () => {
+    await api.stop();
+  });
+  await api.waitForHealth();
+
+  const started = await postRun(api.baseUrl, { source: 'c4-manual-resume', sleepMs: 2000 });
+  const runId = started.run_id;
+  await waitForCondition(
+    async () => {
+      const run = await api.readRun(runId);
+      return !!run && run.status === 'running';
+    },
+    { timeoutMs: 10_000, intervalMs: 50, label: `running state for ${runId}` }
+  );
+
+  await runDbosCliNoOutput('cancel', runId);
+  await waitForCondition(
+    async () => {
+      const run = await api.readRun(runId);
+      return !!run && run.dbos_status === 'CANCELLED';
+    },
+    { timeoutMs: 10_000, intervalMs: 100, label: `cancelled state for ${runId}` }
+  );
+
+  const resumeRes = await fetch(`${api.baseUrl}/runs/${encodeURIComponent(runId)}/resume`, {
+    method: 'POST'
+  });
+  assert.equal(resumeRes.status, 202);
+  assert.deepEqual(await resumeRes.json(), { run_id: runId, status: 'running' });
+
+  const done = await api.waitForRunTerminal(runId, 20_000);
+  assert.equal(done?.status, 'done');
+  assert.equal(done?.dbos_status, 'SUCCESS');
+  assert.equal(done.timeline.filter((step) => step.function_name === 'prepare').length, 1);
 });
 
 test('C4 determinism guard: default workflow body keeps nondeterminism out of workflow function', async () => {

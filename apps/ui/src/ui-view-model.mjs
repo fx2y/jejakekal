@@ -3,7 +3,7 @@
  *   run_id: string,
  *   status: string,
  *   dbos_status?: string | null,
- *   timeline?: Array<{function_id:number,function_name:string,error?:unknown,started_at_epoch_ms?:number|null,completed_at_epoch_ms?:number|null}>,
+ *   timeline?: Array<{function_id:number,function_name:string,error?:unknown,started_at_epoch_ms?:number|null,completed_at_epoch_ms?:number|null,duration_ms?:number|null,attempt?:number|null,io_hashes?:string[],cost?:number|null}>,
  *   artifacts?: Array<Record<string, unknown>>
  * }} RunProjection
  */
@@ -52,14 +52,36 @@ export function execRows(run) {
   return (run.timeline ?? []).map((row) => {
     const completed = typeof row.completed_at_epoch_ms === 'number' ? row.completed_at_epoch_ms : null;
     const started = typeof row.started_at_epoch_ms === 'number' ? row.started_at_epoch_ms : null;
-    const durationMs = completed != null && started != null ? Math.max(0, completed - started) : null;
+    const durationMs =
+      typeof row.duration_ms === 'number'
+        ? row.duration_ms
+        : completed != null && started != null
+          ? Math.max(0, completed - started)
+          : null;
+    const attemptRaw = typeof row.attempt === 'number' ? row.attempt : Number(row.attempt ?? 1);
+    const attempt = Number.isFinite(attemptRaw) ? Math.max(1, Math.trunc(attemptRaw)) : 1;
+    const ioHashes = Array.isArray(row.io_hashes)
+      ? row.io_hashes
+          .filter((value) => typeof value === 'string')
+          .map((value) => String(value))
+      : [];
     return {
       function_id: row.function_id,
       function_name: row.function_name,
       phase: row.error ? 'error' : 'ok',
-      duration_ms: durationMs
+      duration_ms: durationMs,
+      attempt,
+      io_hash_count: ioHashes.length,
+      cost: row.cost ?? null
     };
   });
+}
+
+/**
+ * @param {RunProjection | null | undefined} run
+ */
+export function isRunResumable(run) {
+  return !!run && ['CANCELLED', 'RETRIES_EXCEEDED'].includes(String(run.dbos_status ?? ''));
 }
 
 /**
@@ -79,7 +101,9 @@ export function artifactListItemModel(artifact) {
     visibility: String(row['visibility'] ?? ''),
     created_at: typeof row['created_at'] === 'string' ? row['created_at'] : '',
     cost: prov['cost'] ?? row['cost'] ?? null,
-    source_count: sourceCount
+    source_count: sourceCount,
+    producer_function_id:
+      typeof prov['producer_function_id'] === 'number' ? Math.trunc(prov['producer_function_id']) : null
   };
 }
 

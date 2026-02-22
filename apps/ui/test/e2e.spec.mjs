@@ -1,8 +1,11 @@
 import { test, expect } from '@playwright/test';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import { startUiServer } from '../src/server.mjs';
 
 let runtime;
 let baseUrl;
+const execFile = promisify(execFileCb);
 
 test.beforeAll(async () => {
   try {
@@ -121,4 +124,83 @@ test('C3 HX polling endpoint returns OOB updates for exec+artifacts+status', asy
   expect(html).toContain('id="artifacts" hx-swap-oob="true"');
   expect(html).toContain('id="run-status"');
   expect(html).toContain('hx-swap-oob="true"');
+});
+
+test('C4 artifact viewer deep-link focuses producing execution step', async ({ page, request }) => {
+  const create = await request.post(`${baseUrl}/runs`, {
+    data: { cmd: '/doc c4-deep-link' }
+  });
+  expect(create.status()).toBe(202);
+  const started = await create.json();
+
+  let run = null;
+  for (let i = 0; i < 120; i += 1) {
+    const runRes = await request.get(
+      `http://127.0.0.1:${runtime.apiPort}/runs/${encodeURIComponent(started.run_id)}`
+    );
+    expect(runRes.status()).toBe(200);
+    run = await runRes.json();
+    if (run.status === 'done') break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  expect(run?.status).toBe('done');
+
+  const listRes = await request.get(`http://127.0.0.1:${runtime.apiPort}/artifacts?type=raw`);
+  expect(listRes.status()).toBe(200);
+  const list = await listRes.json();
+  const artifactId = Array.isArray(list) ? list.find((row) => row.run_id === started.run_id)?.id : '';
+  expect(artifactId).toBeTruthy();
+
+  await page.goto(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
+  await page.click('a:has-text("open sources")');
+  await expect(page.locator('#timeline li.step-focus')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('#timeline li.step-focus')).toContainText('persist-artifacts');
+});
+
+test('C4 resume control resumes cancelled run', async ({ page, request }) => {
+  const create = await request.post(`${baseUrl}/runs`, {
+    data: { cmd: '/doc c4-ui-resume', sleepMs: 3000 }
+  });
+  expect(create.status()).toBe(202);
+  const started = await create.json();
+  const runId = started.run_id;
+
+  for (let i = 0; i < 60; i += 1) {
+    const runRes = await request.get(`http://127.0.0.1:${runtime.apiPort}/runs/${encodeURIComponent(runId)}`);
+    expect(runRes.status()).toBe(200);
+    const run = await runRes.json();
+    if (run.status === 'running') break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  await execFile(
+    'pnpm',
+    [
+      '--filter',
+      '@jejakekal/api',
+      'exec',
+      'dbos',
+      'workflow',
+      'cancel',
+      '-s',
+      String(process.env.DBOS_SYSTEM_DATABASE_URL),
+      runId
+    ],
+    { cwd: process.cwd() }
+  );
+
+  for (let i = 0; i < 60; i += 1) {
+    const runRes = await request.get(`http://127.0.0.1:${runtime.apiPort}/runs/${encodeURIComponent(runId)}`);
+    expect(runRes.status()).toBe(200);
+    const run = await runRes.json();
+    if (run.dbos_status === 'CANCELLED') break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  await page.goto(`${baseUrl}/runs/${encodeURIComponent(runId)}`);
+  await expect(page.locator('#resume-form')).toBeVisible({ timeout: 10_000 });
+  await page.click('#resume-form button[type="submit"]');
+  await expect(page.locator('#run-status')).toContainText('running:', { timeout: 10_000 });
+  await expect(page.locator('#run-status')).toContainText('done:', { timeout: 30_000 });
+  await expect(page.locator('#run-status')).toHaveAttribute('data-state', 'done');
 });

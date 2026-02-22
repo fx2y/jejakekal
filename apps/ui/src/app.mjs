@@ -71,20 +71,23 @@ async function pollLoop() {
 
 async function handleCommandSubmit(event) {
   const form = /** @type {HTMLFormElement} */ (event.target);
-  if (!form || !form.matches('#command-form')) return;
+  if (!form || (!form.matches('#command-form') && !form.matches('#resume-form'))) return;
   if (typeof window !== 'undefined' && typeof window['htmx'] !== 'undefined') return;
 
   event.preventDefault();
+  const isCommand = form.matches('#command-form');
   const body = new URLSearchParams();
-  for (const [key, value] of new FormData(form).entries()) {
-    if (typeof value === 'string') {
-      body.append(key, value);
+  if (isCommand) {
+    for (const [key, value] of new FormData(form).entries()) {
+      if (typeof value === 'string') {
+        body.append(key, value);
+      }
     }
   }
-  const response = await fetch('/ui/commands', {
+  const response = await fetch(isCommand ? '/ui/commands' : form.action, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body
+    body: isCommand ? body : undefined
   });
   const html = await response.text();
   applyUiResponse(html);

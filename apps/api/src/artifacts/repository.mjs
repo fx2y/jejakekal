@@ -136,6 +136,7 @@ export function toArtifactListItem(artifact) {
     status: artifact.status,
     visibility: artifact.visibility,
     created_at: artifact.created_at,
-    cost: artifact.prov?.cost ?? null
+    cost: artifact.prov?.cost ?? null,
+    prov: artifact.prov
   };
 }
