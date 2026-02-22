@@ -1,56 +1,71 @@
 # Jejakekal Policy SoT
 
-Authoritative repo policy/workflow/invariants for agents + humans. Keep exactly one git-tracked repo-root memory file (`AGENTS.md`). Treat `CONTRIBUTING.md`/`HARNESS.md` as summaries, not policy sources. Use `AGENTS.local.md` for private prefs only.
+Repo memory SoT for humans+agents.
+Hard meta-rules:
+- Keep exactly one git-tracked repo-root memory file: `AGENTS.md`.
+- `CONTRIBUTING.md`/`HARNESS.md` are summaries, never authority.
+- Private prefs live in untracked `AGENTS.local.md`.
 
-## Build/Run Entry Points (hard)
+## Command SoT (hard)
 
 - Bootstrap: `mise install`
-- Fast dev loop: `mise watch verify` (or narrower watch task)
-- Quick gate: `mise run verify` (`lint` + `typecheck` + `test:unit` + `test:workflow`)
-- Full gate (only release verdict): `mise run ci`
-- Stack lifecycle: `mise run up`, `mise run down`, `mise run reset`, `mise run psql`
-- Golden workflow: `mise run golden:record` then `mise run golden:diff`
-- UI behavior gate: `mise run ui:e2e`
-- Perf gate: `mise run bench:check`
+- Inner loop: `mise watch verify` (or narrower watch task)
+- Quick gate: `mise run verify` (`lint`,`typecheck`,`test:unit`,`test:workflow`)
+- Release verdict: `mise run ci` (only)
+- Stack ops: `mise run up|down|reset|psql`
+- Golden: `mise run golden:record && mise run golden:diff`
+- UI behavior: `mise run ui:e2e`
+- Perf budget: `mise run bench:check`
+- CI parity: GH Action must execute `mise run ci` only
 
-## Non-Negotiable Invariants
+## Engineering Doctrine (hard, opinionated)
 
-- Host deps stay narrow: only `mise` + container runtime; never require host `psql`/tool drift.
-- `.mise.toml` is build/test SoT; do not add parallel command graphs elsewhere.
-- CI/local parity is absolute: GH Action runs `mise run ci` only.
-- Workflow engine remains DBOS-shaped: deterministic replay, checkpointed steps, crash-resume from last completed step.
-- Side effects are exactly-once-effective via `callIdempotentEffect(effectKey, ...)`; never call external effects raw.
-- Every workflow test that touches behavior must freeze `Date.now` + `Math.random`.
-- Regressions are reviewed via artifacts/run-bundle diff, not opaque assertion text.
-- Golden bundle diffs must be path/time neutral (`createdAt`, roots, locale/timezone stability).
-- Sandbox contract is strict executor semantics: `--read-only`, explicit export file, env allowlist, deterministic payload hash.
-- UI e2e asserts IDs + state transitions, never pixel snapshots.
-- Performance budget misses are correctness failures.
-- Any new gate belongs in `mise run ci`; nowhere else.
+- Determinism > convenience.
+- Core is pure; effects at boundaries only.
+- Behavior contract beats implementation style; preserve public keys/IDs/routes unless migrated additively.
+- Fail closed: no silent fallback data synthesis for broken invariants.
+- Typed client errors (`4xx`) for client faults; server faults stay opaque (`internal_error`).
+- Exactly-once-effective side effects only via `callIdempotentEffect(effectKey, ...)` (serialized + locked).
+- Durability is non-optional: checkpointed steps, replay, crash-resume from last completed step.
+- Security baseline: strict run-id parsing/allowlist, raw-path hostile handling, export write confined under bundle root.
+- Sandbox is strict executor contract, not general shell.
+- Perf caps are correctness caps.
 
-## State + Content Patterns
+## Coding Style (hard)
 
-- API workflow response contract: timeline + artifacts + run-bundle path; preserve stable keys/names.
-- UI state machine lives in DOM IDs/datasets (`#run-status[data-state]`), planes are fixed IDs.
-- Pipeline outputs are deterministic quartet: raw, docir, chunk-index, memo.
-- JSON artifacts are canonicalized/stable (sorted objects where relevant, newline-terminated files).
+- Pipeline shape: `parse -> validate -> normalize -> pure transform -> effect adapter -> canonical projection`.
+- Name things by domain + unit (`*_ms`, `workflow_id`, `effect_key`), never vague aliases.
+- Prefer small composable modules with explicit I/O; reject hidden global mutable state.
+- Use additive migrations, not big-bang rewrites; keep compatibility windows explicit+time-boxed.
+- Keep JSON outputs canonical/stable/newline-terminated; diff noise is a bug.
 
-## Living Spec Loop (mandatory on every behavior change)
+## Product Contracts To Freeze
 
-- Ship proof with change: test delta and/or golden delta and/or perf budget delta.
-- Update learnings log for durable decisions/constraints: `spec-*/00-learnings.jsonl`.
-- Update checklist state for execution status: `spec-*/01-tasks.jsonl`.
-- If a new failure mode appears, codify fix recipe in `.codex/rules/*` (not tribal memory).
-- PRs with behavior deltas but no proof/log updates are incomplete.
+- API: canonical `/runs*` + `/healthz`; no `/api/*` resurrection.
+- Run payload: stable keys (`run_id,status,dbos_status,header,timeline`), export adds `artifacts` + `run_bundle_path`.
+- UI: fixed plane IDs + `#run-status[data-state]` FSM (`idle|running|done|error`).
+- Artifact vocabulary: `raw,docir,chunk-index,memo` (`chunk-index` only).
+- Run bundle: fixed v0 set + additive DBOS snapshots; normalized root/time for cross-machine diffs.
+- Workflow truth: DBOS tables (`dbos.workflow_status`, `dbos.operation_outputs`); projections must honor DBOS shape quirks.
 
-## Failure Triage (first moves)
+## Living-Spec Loop (mandatory per behavior delta)
 
-- `postgres unavailable` in tests: `mise run up` then `mise run reset`.
-- `stack did not become healthy`: inspect `docker compose ... ps --format json | jq -s`; verify health + PG volume mount path (`/var/lib/postgresql`).
-- Replay/idempotency flake: verify determinism freeze + step checkpoint writes + idempotency key composition.
-- Golden mismatch: confirm only intentional structural diff; re-record only after review.
-- Sandbox chaos hash drift: remove nondeterministic output/env leakage, enforce identical input->output.
-- CI pass local fail (or inverse): rerun only via `mise run ci`; remove ad-hoc command paths.
+- Ship proof with change (test and/or golden and/or perf).
+- Update durable decisions in `spec-*/00-learnings.jsonl`.
+- Update execution ledger in `spec-*/01-tasks.jsonl` or active cycle tasks file (e.g. `spec-0/02-tasks.jsonl`).
+- Update operator recipe when UX/ops flow changes (`spec-*/02-tutorial.jsonl` when present).
+- New failure mode => new rule/recipe in `.codex/rules/*` in same change.
+- Behavior-changing PR without proof+log updates is incomplete.
+
+## Triage First Moves
+
+- PG unavailable: `mise run up && mise run reset`.
+- Stack unhealthy: `docker compose -f infra/compose/docker-compose.yml ps --format json | jq -s`; verify health + PG mount `/var/lib/postgresql`.
+- Replay/idempotency flake: check determinism freeze, checkpoint writes, effect-key composition/lock path.
+- Hostile path probe false negatives: use `curl --path-as-is` for encoded dot-segments.
+- Golden drift: verify structural intent; never blind re-record.
+- Sandbox hash drift: remove nondeterministic env/output/time leakage.
+- CI/local mismatch: rerun only `mise run ci`; delete shadow command graphs.
 
 ## Imported Scoped Rules
 

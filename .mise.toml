@@ -157,3 +157,16 @@ run = "bash mise-tasks/bench/resume"
 run = "bash mise-tasks/bench/check"
 sources = ["scripts/bench-*.mjs", "spec-0/budgets.json"]
 outputs = [".cache/bench-check.stamp"]
+
+[tasks."showcase:002:signoff"]
+description = "Deterministic 002 operator signoff with structured JSON evidence"
+run = "bash mise-tasks/showcase/002-signoff"
+sources = [
+  "scripts/showcase-002-signoff.mjs",
+  "apps/api/src/**/*.mjs",
+  "apps/ui/src/**/*.mjs",
+  "packages/**/*.mjs",
+  "docs/showcase/002-live-runs-operator-course.md",
+  ".mise.toml"
+]
+outputs = [".cache/showcase-002-signoff.json"]

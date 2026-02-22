@@ -13,17 +13,17 @@ paths:
 
 # Task/CI Rules
 
-- `.mise.toml` is command SoT; keep task names stable and namespaced.
-- New expensive task must declare `sources` + `outputs` (incremental skip is mandatory).
-- CI workflow runs `mise run ci` only; never duplicate gate lists in YAML.
-- Tool pins live in `mise` + `packageManager`; update by PR, never ad hoc local drift.
-- Keep `MISE_JOBS` parallelism sane (`4` local default) and deterministic.
-- Wrappers in `mise-tasks/**` should be thin, strict (`set -euo pipefail`), non-interactive.
-- Stack wrappers use `docker compose ... exec` (no host `psql` assumptions).
+- `.mise.toml` is command graph SoT; task names stay stable/namespaced.
+- Full release verdict is `mise run ci`; CI YAML/scripts must not duplicate gate lists.
+- New expensive tasks must declare `sources` + `outputs` (incremental skip required).
+- Wrappers in `mise-tasks/**` stay thin, strict (`set -euo pipefail`), non-interactive.
+- Host deps stay minimal: `mise` + container runtime only; DB access via `mise run psql`.
+- Tool/version pins live in `mise` + `packageManager`; upgrade via reviewed PRs.
+- `ui:e2e` and perf checks belong inside `mise run ci`, never side pipelines.
 
 # Failure Recipes
 
-- Task skips unexpectedly: check `sources/outputs` glob coverage and generated files.
-- CI/local drift: compare against `.github/workflows/ci.yml`; if it does more than `mise run ci`, fix workflow.
-- Stack health timeout: validate compose JSON stream parse via `jq -s` and per-service health fields.
-- PG boot failure after image bump: confirm volume mount path `/var/lib/postgresql`.
+- Task unexpectedly skipped: audit `sources/outputs` globs and generated paths.
+- CI/local drift: workflow must run only `mise run ci`; remove shadow gates.
+- Stack health timeout: parse compose stream via `jq -s`; inspect per-service health.
+- PG boot failure: verify mount path `/var/lib/postgresql` (PG18 layout).

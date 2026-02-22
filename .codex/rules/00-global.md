@@ -4,19 +4,20 @@ description: Repo-wide coding + review policy.
 
 # Global Rules
 
-- Runtime baseline: Node ESM (`.mjs`) + JSDoc-typed JS (`checkJs` on); exported APIs need clear param/return contracts.
-- Style baseline: deterministic data first, minimal magic, explicit I/O boundaries, no hidden global state.
-- Keep side effects at edges; core transforms should be pure and replayable.
-- Prefer stable schemas over clever abstractions; compatibility beats novelty.
-- File outputs that feed tests/goldens must be canonical and newline-terminated.
-- Never bypass `mise` entrypoints for official build/test verdicts.
-- Additive change policy: do not break existing task names/contracts without paired migration + tests.
-- Unknowns resolve by proving invariants in tests, not comments.
+- Runtime baseline: Node ESM (`.mjs`) + JSDoc-typed JS (`checkJs` on); exported surfaces need explicit input/output contracts.
+- Design baseline: deterministic-first, explicit I/O seams, no hidden mutable global state.
+- Preferred code shape: `parse -> validate -> normalize -> pure transform -> effect adapter -> canonical projection`.
+- Keep side effects at edges; core logic must replay from persisted inputs.
+- No silent invariant-masking fallbacks; emit typed errors or fail fast.
+- Canonicalize all artifact JSON used by tests/goldens (stable key order where relevant, newline-terminated).
+- Never bypass `mise` for authoritative build/test verdicts.
+- Compatibility over novelty: schema/route/task changes are additive unless explicit migration lands with tests.
+- Resolve uncertainty with proofs (tests/golden/perf), not comments.
 
 # Review Bar (opinionated)
 
-- Reject code that cannot be replayed/diffed deterministically.
-- Reject “fixes” without failure reproduction.
-- Reject behavior changes lacking test/golden/perf proof.
-- Favor small seams + adapters; avoid framework lock-in in core logic.
-- Optimize for debuggability: explicit names, stable IDs, structured artifacts.
+- Reject non-replayable behavior or nondeterministic diffs.
+- Reject fixes without reproduction + regression proof.
+- Reject behavior deltas without test/golden/perf evidence.
+- Reject broad rewrites where seam-level adapters suffice.
+- Require debuggable artifacts: stable IDs, typed errors, structured outputs.

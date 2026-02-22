@@ -9,15 +9,16 @@ paths:
 
 # Sandbox Rules
 
-- Sandbox is a strict executor, not a feature playground.
-- Must run isolated: `--network none`, `--read-only`, scratch mount only, explicit workdir.
-- Env exposure is allowlist-only; default deny.
-- Export path must be explicit and deterministic; payload hash is contract output.
-- Replay safety: same request (image/command/input/env allowlist) => same payload hash.
-- Chaos tests are mandatory for sandbox behavior changes.
+- Sandbox is a strict executor contract, not an integration playground.
+- Isolation baseline: `--network none`, read-only input mount, explicit writable export mount only, explicit workdir.
+- Mount model is fixed: `/workspace/input` (ro) + `/workspace/export` (rw); reject writes outside declared export file.
+- Env exposure is allowlist-only (default deny).
+- Export filename/path must be explicit + validated; payload hash is contract output.
+- Replay contract: same image+cmd+input+env allowlist => same payload hash.
+- Sandbox behavior deltas require sandbox + chaos proof.
 
 # Failure Recipes
 
-- Hash mismatch across same input: remove nondeterministic tool output and env/time leakage.
-- Missing output file with exit 0: check command/export filename alignment and mount path.
-- Sandbox flake in CI: verify container image pin/availability and avoid mutable latest tags in tests when possible.
+- Hash mismatch for same input: remove env/time nondeterminism and unstable tool output.
+- Exit 0 but missing export: verify export filename alignment and mount paths.
+- CI flakes: verify image pin/availability; avoid mutable `latest` tags in tests.
