@@ -11,6 +11,7 @@ import { isRequestError } from '../../api/src/request-errors.mjs';
 import { shouldServeFullDocument } from './hx-request.mjs';
 import { getArtifact, getRun, listArtifacts, resumeRun, startRun } from './ui-api-client.mjs';
 import { resolveRunAfterStart } from './ui-command-start.mjs';
+import { resolveUiStartupConfig } from './ui-startup.mjs';
 import {
   renderArtifactViewer,
   renderArtifactsPane,
@@ -25,10 +26,12 @@ import { statusModel } from './ui-view-model.mjs';
 
 /**
  * @param {number} uiPort
- * @param {{apiPort?: number}} [opts]
+ * @param {{apiPort?: number, embedApi?: boolean}} [opts]
  */
 export async function startUiServer(uiPort = 4110, opts = {}) {
-  const api = await startApiServer(Number(opts.apiPort ?? process.env.API_PORT ?? '4010'));
+  const startup = resolveUiStartupConfig(opts);
+  const embeddedApi = startup.embedApi ? await startApiServer(startup.apiPort) : null;
+  const apiPort = embeddedApi?.port ?? startup.apiPort;
 
   const server = createServer(async (req, res) => {
     try {
@@ -37,12 +40,12 @@ export async function startUiServer(uiPort = 4110, opts = {}) {
         return;
       }
 
-      if (await handleUiRoutes(req, res, { apiPort: api.port })) {
+      if (await handleUiRoutes(req, res, { apiPort })) {
         return;
       }
 
       if (shouldProxy(req.method ?? 'GET', req.url)) {
-        await proxyToApi(req, res, api.port);
+        await proxyToApi(req, res, apiPort);
         return;
       }
 
@@ -63,12 +66,13 @@ export async function startUiServer(uiPort = 4110, opts = {}) {
   const boundUiPort = await listenLocal(server, uiPort);
   const close = onceAsync(async () => {
     await closeServer(server);
-    await api.close();
+    await embeddedApi?.close();
   });
 
   return {
     uiPort: boundUiPort,
-    apiPort: api.port,
+    apiPort,
+    embeddedApi: startup.embedApi,
     close
   };
 }
@@ -512,7 +516,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.UI_PORT ?? '4110');
   startUiServer(port)
     .then((ui) => {
-      process.stdout.write(`ui listening on ${ui.uiPort}\n`);
+      process.stdout.write(
+        `ui listening on ${ui.uiPort} (api ${ui.apiPort}, mode=${ui.embeddedApi ? 'embedded' : 'external'})\n`
+      );
       const handleSignal = async (signal) => {
         process.stdout.write(`ui shutdown (${signal})\n`);
         await ui.close();

@@ -170,3 +170,7 @@ sources = [
   ".mise.toml"
 ]
 outputs = [".cache/showcase-002-signoff.json"]
+
+[tasks."wait:health"]
+description = "Poll a health endpoint until it returns HTTP 2xx"
+run = "mise x node@24.13.1 -- node scripts/wait-for-health.mjs"

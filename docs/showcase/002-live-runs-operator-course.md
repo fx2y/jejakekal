@@ -19,9 +19,20 @@ mise run reset
 ```
 
 ## 1. 5-minute value demo (PO loop, live UI+API)
-1. Start UI (it starts API internally):
+1. Start UI in embedded mode (default; it starts API internally):
 ```bash
 API_PORT=4010 UI_PORT=4110 mise x node@24.13.1 -- node apps/ui/src/server.mjs
+mise run wait:health -- http://127.0.0.1:4010/healthz 15000 100
+mise run wait:health -- http://127.0.0.1:4110/healthz 15000 100
+```
+Important: do not run standalone API on the same `API_PORT` while UI is in embedded mode, or startup fails with `EADDRINUSE`.
+
+Split-process alternative (UI proxies to external API, no embedded bind):
+```bash
+API_PORT=4010 mise x node@24.13.1 -- node apps/api/src/server.mjs
+mise run wait:health -- http://127.0.0.1:4010/healthz 15000 100
+API_PORT=4010 UI_PORT=4110 UI_EMBED_API=0 mise x node@24.13.1 -- node apps/ui/src/server.mjs
+mise run wait:health -- http://127.0.0.1:4110/healthz 15000 100
 ```
 2. Open UI:
 ```bash
@@ -39,6 +50,7 @@ xdg-open 'http://127.0.0.1:4110/?sleepMs=250' || open 'http://127.0.0.1:4110/?sl
 1. Start API:
 ```bash
 API_PORT=4010 mise x node@24.13.1 -- node apps/api/src/server.mjs
+mise run wait:health -- http://127.0.0.1:4010/healthz 15000 100
 ```
 2. Start run:
 ```bash
