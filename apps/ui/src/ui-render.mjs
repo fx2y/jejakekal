@@ -42,9 +42,10 @@ export function renderConversationPane(state, text) {
 /**
  * @param {import('./ui-view-model.mjs').RunProjection | null} run
  * @param {{type?: string, visibility?: string, q?: string, sleepMs?: number, step?: number}} filters
+ * @param {{status?: {state:string,text:string}, emptyText?: string}} [opts]
  */
-export function renderExecutionPane(run, filters) {
-  const status = statusModel(run);
+export function renderExecutionPane(run, filters, opts = {}) {
+  const status = opts.status ?? statusModel(run);
   const rows = execRows(run);
   const query = queryForFilters(filters);
   const pollAttrs =
@@ -66,7 +67,7 @@ export function renderExecutionPane(run, filters) {
       : '';
   const body = run
     ? `<p><a href="/runs/${encodeURIComponent(run.run_id)}${query}" hx-push-url="true">open run</a></p>${resumeControl}<ul id="timeline">${items}</ul>`
-    : '<p>No run selected.</p><ul id="timeline"></ul>';
+    : `<p>${uiEsc.escapeHtml(opts.emptyText ?? 'No run selected.')}</p><ul id="timeline"></ul>`;
   return `<section id="execution-plane" class="plane"><aside id="exec"${pollAttrs}><h2>Execution</h2><p>status=${uiEsc.escapeHtml(status.state)}</p>${body}</aside></section>`;
 }
 

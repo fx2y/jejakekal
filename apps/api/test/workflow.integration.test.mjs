@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
-import { access } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { shutdownDbosRuntime } from '../src/dbos-runtime.mjs';
 import { startApiServer } from '../src/server.mjs';
 import { mapDbosStatusToApiStatus, mapOperationOutputRow, mapWorkflowStatusRow } from '../src/runs-projections.mjs';
@@ -11,6 +13,7 @@ import { freezeDeterminism } from '../../../packages/core/src/determinism.mjs';
 import { readBundle } from '../../../packages/core/src/run-bundle.mjs';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { listZipEntries } from '../../../packages/core/src/deterministic-zip.mjs';
+import { resolveBundleArtifactUri } from '../src/artifact-uri.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -269,6 +272,22 @@ test('C2 payload guards: no default source fallback and invalid command typed 40
   });
   assert.equal(unknownCommand.status, 400);
   assert.deepEqual(await unknownCommand.json(), { error: 'invalid_command', cmd: '/nope' });
+
+  const badSleepType = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'x', sleepMs: 'abc' })
+  });
+  assert.equal(badSleepType.status, 400);
+  assert.deepEqual(await badSleepType.json(), { error: 'invalid_run_payload' });
+
+  const badSleepZero = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'x', sleepMs: 0 })
+  });
+  assert.equal(badSleepZero.status, 400);
+  assert.deepEqual(await badSleepZero.json(), { error: 'invalid_run_payload' });
 });
 
 test('C2 chat ledger invariant: POST /runs writes cmd,args,run_id only', async (t) => {
@@ -585,6 +604,46 @@ test('P0 workflowId dedup rejects payload mismatch with 409', async (t) => {
   });
 });
 
+test('C6 chat ledger dedup: idempotent retry with same workflowId keeps one chat_event row', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const workflowId = `wf-chat-dedup-${process.pid}-${Date.now()}`;
+  const body = { intent: 'doc', args: { source: 'chat-dedup' }, workflowId, sleepMs: 5 };
+
+  const first = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  assert.equal(first.status, 202);
+  const second = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  assert.equal(second.status, 202);
+  const firstBody = await first.json();
+  const secondBody = await second.json();
+  assert.equal(secondBody.run_id, firstBody.run_id);
+
+  const rows = await client.query(
+    `SELECT id, cmd, args, run_id
+     FROM chat_event
+     WHERE run_id = $1`,
+    [firstBody.run_id]
+  );
+  assert.equal(rows.rows.length, 1);
+  assert.equal(rows.rows[0].cmd, '/doc');
+  assert.deepEqual(rows.rows[0].args, { source: 'chat-dedup' });
+  assert.equal(rows.rows[0].run_id, firstBody.run_id);
+});
+
 test('P1 export reads persisted artifacts even when source cannot be recovered from timeline', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
@@ -630,7 +689,116 @@ test('P1 export reads persisted artifacts even when source cannot be recovered f
   );
 });
 
-test('P2 api close removes temporary bundles root by default', async (t) => {
+test('C6 artifact blobs survive graceful API restart for detail/download', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const bundlesRoot = await mkdtemp(join(tmpdir(), 'jejakekal-c6-bundles-'));
+  t.after(async () => {
+    await rm(bundlesRoot, { recursive: true, force: true });
+  });
+
+  let api = await startApiServer(0, { bundlesRoot });
+  t.after(async () => {
+    await api.close();
+  });
+  let baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'c6-graceful-restart', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+
+  const artifactId = `${started.run_id}:raw`;
+  const detailBefore = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
+  assert.equal(detailBefore.status, 200);
+  const downloadBefore = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}/download`);
+  assert.equal(downloadBefore.status, 200);
+
+  await api.close();
+  api = await startApiServer(0, { bundlesRoot });
+  baseUrl = `http://127.0.0.1:${api.port}`;
+
+  const detailAfter = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
+  assert.equal(detailAfter.status, 200);
+  const detailJson = await detailAfter.json();
+  assert.equal(detailJson.meta.id, artifactId);
+
+  const downloadAfter = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}/download`);
+  assert.equal(downloadAfter.status, 200);
+  assert.equal((await downloadAfter.text()).includes('c6-graceful-restart'), true);
+});
+
+test('C6 export and bundle fail closed when persisted artifact blob is missing', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'c6-dangling-blob', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+
+  const rowRes = await client.query(`SELECT id, uri FROM artifact WHERE run_id = $1 AND type = 'raw'`, [started.run_id]);
+  assert.equal(rowRes.rows.length, 1);
+  const artifactId = rowRes.rows[0].id;
+  const filePath = resolveBundleArtifactUri(api.bundlesRoot, rowRes.rows[0].uri);
+  await rm(filePath, { force: true });
+
+  const detailRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
+  assert.equal(detailRes.status, 500);
+  assert.deepEqual(await detailRes.json(), { error: 'internal_error' });
+
+  const exportRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/export`);
+  assert.equal(exportRes.status, 500);
+  assert.deepEqual(await exportRes.json(), { error: 'internal_error' });
+
+  const bundleRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/bundle`);
+  assert.equal(bundleRes.status, 500);
+  assert.deepEqual(await bundleRes.json(), { error: 'internal_error' });
+});
+
+test('C6 artifact detail fails closed for corrupt JSON blob', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'c6-corrupt-json', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+
+  const rowRes = await client.query(`SELECT id, uri FROM artifact WHERE run_id = $1 AND type = 'docir'`, [started.run_id]);
+  assert.equal(rowRes.rows.length, 1);
+  const artifactId = rowRes.rows[0].id;
+  const filePath = resolveBundleArtifactUri(api.bundlesRoot, rowRes.rows[0].uri);
+  await writeFile(filePath, '{bad json', 'utf8');
+
+  const detailRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
+  assert.equal(detailRes.status, 500);
+  assert.deepEqual(await detailRes.json(), { error: 'internal_error' });
+});
+
+test('C6 api close keeps default bundles root; explicit cleanup remains available', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
 
@@ -638,6 +806,11 @@ test('P2 api close removes temporary bundles root by default', async (t) => {
   const bundlesRoot = api.bundlesRoot;
   await access(bundlesRoot);
   await api.close();
+  await access(bundlesRoot);
 
-  await assert.rejects(() => access(bundlesRoot));
+  const cleanupRoot = await mkdtemp(join(tmpdir(), 'jejakekal-c6-cleanup-'));
+  const cleanupApi = await startApiServer(0, { bundlesRoot: cleanupRoot, cleanupBundlesOnClose: true });
+  await access(cleanupRoot);
+  await cleanupApi.close();
+  await assert.rejects(() => access(cleanupRoot));
 });

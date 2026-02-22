@@ -1,11 +1,48 @@
 import { test, expect } from '@playwright/test';
 import { execFile as execFileCb } from 'node:child_process';
+import { request as httpRequest } from 'node:http';
 import { promisify } from 'node:util';
 import { startUiServer } from '../src/server.mjs';
 
 let runtime;
 let baseUrl;
 const execFile = promisify(execFileCb);
+
+function rawHttp(req) {
+  return new Promise((resolve, reject) => {
+    const pending = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: req.port,
+        method: req.method,
+        path: req.path,
+        headers: req.headers
+      },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          let json = null;
+          try {
+            json = body.length > 0 ? JSON.parse(body) : null;
+          } catch {
+            json = null;
+          }
+          resolve({
+            status: res.statusCode ?? 0,
+            text: body,
+            json
+          });
+        });
+      }
+    );
+    pending.on('error', reject);
+    pending.end();
+  });
+}
 
 test.beforeAll(async () => {
   try {
@@ -73,6 +110,7 @@ test('C3 dual-ID shell + command flow reaches terminal status', async ({ page })
   await expect(page.locator('#timeline li[data-function-id=\"4\"]')).toContainText('4:persist-artifacts:ok');
   await expect(page.locator('#timeline li[data-function-id=\"5\"]')).toContainText('5:artifact-count:ok');
   await expect(page.locator('#artifacts li').first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('#artifacts')).toContainText('source_count=1');
 });
 
 test('C3 direct artifact URL returns full page shell (non-HX)', async ({ request }) => {
@@ -153,6 +191,52 @@ test('C5 HX history restore on run route returns full page shell', async ({ requ
   expect(html).toContain('<!doctype html>');
   expect(html).toContain('id="main"');
   expect(html).toContain('id="execution-plane"');
+});
+
+test('C6 UI raw-path boundaries return typed/parity-safe errors and no idle poll masking', async () => {
+  const badRun = await rawHttp({
+    port: runtime.uiPort,
+    method: 'GET',
+    path: '/runs/%2E%2E'
+  });
+  expect(badRun.status).toBe(400);
+  expect(badRun.json).toEqual({ error: 'invalid_run_id', field: 'run_id' });
+
+  const badArtifact = await rawHttp({
+    port: runtime.uiPort,
+    method: 'GET',
+    path: '/artifacts/%2E%2E'
+  });
+  expect(badArtifact.status).toBe(400);
+  expect(badArtifact.json).toEqual({ error: 'invalid_artifact_id', field: 'artifact_id' });
+
+  const badPollMalformed = await rawHttp({
+    port: runtime.uiPort,
+    method: 'GET',
+    path: '/ui/runs/%ZZ/poll',
+    headers: { 'HX-Request': 'true' }
+  });
+  expect(badPollMalformed.status).toBe(400);
+  expect(badPollMalformed.text).toContain('data-state="error"');
+  expect(badPollMalformed.text).not.toContain('data-state="idle"');
+
+  const badPollTraversal = await rawHttp({
+    port: runtime.uiPort,
+    method: 'GET',
+    path: '/ui/runs/%2E%2E/poll',
+    headers: { 'HX-Request': 'true' }
+  });
+  expect(badPollTraversal.status).toBe(400);
+  expect(badPollTraversal.text).toContain('data-state="error"');
+});
+
+test('C6 direct missing run route renders full shell with error state (not idle)', async ({ request }) => {
+  const res = await request.get(`${baseUrl}/runs/does-not-exist`);
+  expect(res.status()).toBe(200);
+  const html = await res.text();
+  expect(html).toContain('id="conversation-plane"');
+  expect(html).toContain('id="run-status" data-state="error"');
+  expect(html).toContain('Run not found.');
 });
 
 test('C4 artifact viewer deep-link focuses producing execution step', async ({ page, request }) => {

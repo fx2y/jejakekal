@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { execFile as execFileCb } from 'node:child_process';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { ensureDbosRuntime, shutdownDbosRuntime } from '../src/dbos-runtime.mjs';
 import { startFlakyRetryWorkflowRun } from '../src/dbos-workflows.mjs';
@@ -135,6 +137,56 @@ test('C4 durable-start: kill right after POST /runs response still reaches termi
   const done = await api.waitForRunTerminal(runId, 20_000);
   assert.equal(done?.status, 'done');
   assert.equal(done?.dbos_status, 'SUCCESS');
+});
+
+test('C6 artifact blobs survive SIGKILL restart for detail/download', async (t) => {
+  if (!(await setupDbOrSkip(t))) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  t.after(() => unfreeze());
+  const bundlesRoot = await mkdtemp(join(tmpdir(), 'jejakekal-c6-kill9-bundles-'));
+  t.after(async () => {
+    await rm(bundlesRoot, { recursive: true, force: true });
+  });
+
+  let api = await startApiProcess({
+    env: {
+      JEJAKEKAL_BUNDLES_ROOT: bundlesRoot
+    }
+  });
+  const initialApi = api;
+  t.after(async () => {
+    await initialApi.stop();
+  });
+  await api.waitForHealth();
+
+  const started = await postRun(api.baseUrl, { source: 'c6-kill9-artifact', sleepMs: 400 });
+  const run = await api.waitForRunTerminal(started.run_id, 20_000);
+  assert.equal(run?.status, 'done');
+  const artifactId = `${started.run_id}:raw`;
+
+  const detailBefore = await fetch(`${api.baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
+  assert.equal(detailBefore.status, 200);
+  const downloadBefore = await fetch(`${api.baseUrl}/artifacts/${encodeURIComponent(artifactId)}/download`);
+  assert.equal(downloadBefore.status, 200);
+
+  await api.kill('SIGKILL');
+  api = await startApiProcess({
+    port: api.port,
+    env: {
+      JEJAKEKAL_BUNDLES_ROOT: bundlesRoot
+    }
+  });
+  const resumedApi = api;
+  t.after(async () => {
+    await resumedApi.stop();
+  });
+  await api.waitForHealth();
+
+  const detailAfter = await fetch(`${api.baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
+  assert.equal(detailAfter.status, 200);
+  const downloadAfter = await fetch(`${api.baseUrl}/artifacts/${encodeURIComponent(artifactId)}/download`);
+  assert.equal(downloadAfter.status, 200);
+  assert.equal((await downloadAfter.text()).includes('c6-kill9-artifact'), true);
 });
 
 test('C4 retry/backoff: flaky step retries via DBOS config and succeeds on third attempt', async (t) => {

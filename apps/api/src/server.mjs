@@ -1,7 +1,5 @@
 import { createServer } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { rm } from 'node:fs/promises';
 import { applySchema, makeClient } from './db.mjs';
 import { ensureDbosRuntime, shutdownDbosRuntime } from './dbos-runtime.mjs';
 import { closeServer, listenLocal, sendJson } from './http.mjs';
@@ -10,18 +8,20 @@ import { handleArtifactsRoute } from './artifacts-routes.mjs';
 import { handleSystemRoute } from './system-routes.mjs';
 import { isRequestError } from './request-errors.mjs';
 import { onceAsync } from '../../../packages/core/src/once-async.mjs';
+import { ensureBundlesRoot, shouldCleanupBundlesRootOnClose } from './bundles-root.mjs';
 
 /**
  * @param {number} port
+ * @param {{bundlesRoot?: string, cleanupBundlesOnClose?: boolean}} [opts]
  */
-export async function startApiServer(port = 4010) {
-  const keepBundles = process.env.JEJAKEKAL_BUNDLES_RETAIN === '1';
+export async function startApiServer(port = 4010, opts = {}) {
   const client = makeClient();
   await client.connect();
   await applySchema(client);
   await ensureDbosRuntime();
 
-  const bundlesRoot = await mkdtemp(join(tmpdir(), 'jejakekal-run-bundles-'));
+  const bundlesRoot = await ensureBundlesRoot(opts);
+  const cleanupBundlesOnClose = shouldCleanupBundlesRootOnClose(opts);
 
   const server = createServer(async (req, res) => {
     try {
@@ -53,7 +53,7 @@ export async function startApiServer(port = 4010) {
     await closeServer(server);
     await shutdownDbosRuntime();
     await client.end();
-    if (!keepBundles) {
+    if (cleanupBundlesOnClose) {
       await rm(bundlesRoot, { recursive: true, force: true });
     }
   });

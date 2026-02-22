@@ -4,6 +4,7 @@ import { readRun } from './runs-service.mjs';
 import { toBundleTimeline } from './runs-projections.mjs';
 import { unprocessable } from './request-errors.mjs';
 import { resolveBundleArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
+import { assertArtifactBlobsReadable } from './artifact-blobs.mjs';
 import { listArtifactsByRunId } from './artifacts/repository.mjs';
 
 function trimPreview(source) {
@@ -99,7 +100,10 @@ export async function exportRunBundle(params) {
       outDir: ingestDir
     });
     artifacts = buildIngestArtifacts(ingest);
-  } else if (!source) {
+  } else {
+    await assertArtifactBlobsReadable(artifacts, params.bundlesRoot);
+  }
+  if (artifacts.length > 0 && !source) {
     source = '';
   }
   const bundleTimeline = toBundleTimeline(run.timeline);

@@ -2,13 +2,15 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startApiServer } from '../../api/src/server.mjs';
-import { closeServer, listenLocal } from '../../api/src/http.mjs';
+import { closeServer, listenLocal, sendJson } from '../../api/src/http.mjs';
 import { onceAsync } from '../../../packages/core/src/once-async.mjs';
 import { decodeArtifactRouteId } from '../../api/src/routes/artifacts-paths.mjs';
 import { decodeRunRouteId, getRequestPathname } from '../../api/src/routes/runs-paths.mjs';
 import { decodeAndValidateRunId } from '../../api/src/run-id.mjs';
+import { isRequestError } from '../../api/src/request-errors.mjs';
 import { shouldServeFullDocument } from './hx-request.mjs';
 import { getArtifact, getRun, listArtifacts, resumeRun, startRun } from './ui-api-client.mjs';
+import { resolveRunAfterStart } from './ui-command-start.mjs';
 import {
   renderArtifactViewer,
   renderArtifactsPane,
@@ -50,8 +52,11 @@ export async function startUiServer(uiPort = 4110, opts = {}) {
       res.writeHead(200, { 'content-type': contentType });
       res.end(payload);
     } catch (error) {
-      res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: String(error) }));
+      if (isRequestError(error)) {
+        sendJson(res, error.status, error.payload);
+        return;
+      }
+      sendJson(res, 500, { error: 'internal_error' });
     }
   });
 
@@ -104,16 +109,90 @@ function readFilters(url) {
  * @param {string} pathname
  */
 function decodeUiResumeRouteRunId(pathname) {
+  return decodeUiRunRouteIdWithSuffix(pathname, '/resume');
+}
+
+/**
+ * @param {string} pathname
+ */
+function decodeUiPollRouteRunId(pathname) {
+  return decodeUiRunRouteIdWithSuffix(pathname, '/poll');
+}
+
+/**
+ * @param {string} pathname
+ * @param {string} suffix
+ */
+function decodeUiRunRouteIdWithSuffix(pathname, suffix) {
   const prefix = '/ui/runs/';
-  const suffix = '/resume';
   if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
   const raw = pathname.slice(prefix.length, pathname.length - suffix.length);
   if (!raw || raw.includes('/')) return null;
-  try {
-    return decodeAndValidateRunId(raw);
-  } catch {
-    return null;
+  return decodeAndValidateRunId(raw);
+}
+
+/**
+ * @param {{run: import('./ui-view-model.mjs').RunProjection | null, runMissing: boolean, runErrorStatus: number | null}} state
+ * @param {string | null} requestedRunId
+ */
+function uiRunView(state, requestedRunId) {
+  if (state.run) {
+    const status = statusModel(state.run);
+    return { status, execEmptyText: 'No run selected.' };
   }
+  if (requestedRunId && state.runMissing) {
+    return {
+      status: { state: 'error', text: `error:${requestedRunId}:run_not_found` },
+      execEmptyText: 'Run not found.'
+    };
+  }
+  if (requestedRunId && state.runErrorStatus != null) {
+    return {
+      status: { state: 'error', text: `error:${requestedRunId}:load:${state.runErrorStatus}` },
+      execEmptyText: `Run load failed (${state.runErrorStatus}).`
+    };
+  }
+  return { status: statusModel(null), execEmptyText: 'No run selected.' };
+}
+
+/**
+ * @param {import('node:http').ServerResponse} res
+ * @param {import('node:http').IncomingHttpHeaders} headers
+ * @param {{type?: string, visibility?: string, q?: string, sleepMs?: number, step?: number}} filters
+ * @param {{statusCode:number, statusText:string}} errorState
+ */
+function sendPollErrorResponse(res, headers, filters, errorState) {
+  const exec = renderExecutionPane(null, filters, {
+    status: { state: 'error', text: errorState.statusText },
+    emptyText: 'Run unavailable.'
+  }).replace(
+    '<section id="execution-plane" class="plane">',
+    '<section id="execution-plane" class="plane" hx-swap-oob="true">'
+  );
+  const artifacts = renderArtifactsPane([], filters);
+  if (shouldServeFullDocument(headers)) {
+    const page = renderPage({
+      title: 'Run',
+      conv: renderConversationPane('error', errorState.statusText),
+      exec: renderExecutionPane(null, filters, {
+        status: { state: 'error', text: errorState.statusText },
+        emptyText: 'Run unavailable.'
+      }),
+      artifacts
+    });
+    res.writeHead(errorState.statusCode, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(page);
+    return;
+  }
+  res.writeHead(errorState.statusCode, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(
+    renderPollFragment({
+      exec,
+      artifacts,
+      statusState: 'error',
+      statusText: errorState.statusText
+    })
+  );
 }
 
 /**
@@ -126,14 +205,20 @@ async function loadUiState(apiPort, runId, filters) {
   const artifacts = Array.isArray(artifactsRes.body) ? artifactsRes.body : [];
 
   let run = null;
+  let runMissing = false;
+  let runErrorStatus = null;
   if (runId) {
     const runRes = await getRun(apiPort, runId);
     if (runRes.ok && runRes.body && typeof runRes.body === 'object') {
       run = /** @type {import('./ui-view-model.mjs').RunProjection} */ (runRes.body);
+    } else if (runRes.status === 404) {
+      runMissing = true;
+    } else {
+      runErrorStatus = runRes.status;
     }
   }
 
-  return { run, artifacts };
+  return { run, artifacts, runMissing, runErrorStatus };
 }
 
 /**
@@ -168,16 +253,7 @@ async function handleUiRoutes(req, res, ctx) {
       sleepMs: Number.isFinite(sleepMs) ? Math.max(1, Math.floor(sleepMs)) : undefined
     });
 
-    let run = null;
-    if (started.ok && started.body && typeof started.body === 'object') {
-      const startBody = /** @type {Record<string, unknown>} */ (started.body);
-      if (typeof startBody.run_id === 'string') {
-        const runRes = await getRun(ctx.apiPort, startBody.run_id);
-        if (runRes.ok && runRes.body && typeof runRes.body === 'object') {
-          run = /** @type {import('./ui-view-model.mjs').RunProjection} */ (runRes.body);
-        }
-      }
-    }
+    const run = await resolveRunAfterStart(started, (runId) => getRun(ctx.apiPort, runId));
 
     const artifactsRes = await listArtifacts(ctx.apiPort, filters.queryString);
     const artifacts = Array.isArray(artifactsRes.body) ? artifactsRes.body : [];
@@ -189,7 +265,10 @@ async function handleUiRoutes(req, res, ctx) {
 
     const panes = {
       conv: conv.replace('<aside id="conv">', '<aside id="conv" hx-swap-oob="true">'),
-      exec: renderExecutionPane(run, filters),
+      exec: renderExecutionPane(run, filters, {
+        status,
+        emptyText: started.ok ? 'Run not yet visible.' : 'No run selected.'
+      }),
       artifacts: renderArtifactsPane(artifacts, filters),
       statusState: started.ok ? status.state : 'error',
       statusText: started.ok ? status.text : `error:start:${started.status}`
@@ -198,7 +277,10 @@ async function handleUiRoutes(req, res, ctx) {
       const page = renderPage({
         title: run ? `Run ${run.run_id}` : 'Jejakekal Harness',
         conv: renderConversationPane(panes.statusState, panes.statusText),
-        exec: renderExecutionPane(run, filters),
+        exec: renderExecutionPane(run, filters, {
+          status: { state: panes.statusState, text: panes.statusText },
+          emptyText: started.ok ? 'Run not yet visible.' : 'No run selected.'
+        }),
         artifacts: renderArtifactsPane(artifacts, filters)
       });
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -217,13 +299,17 @@ async function handleUiRoutes(req, res, ctx) {
     if (resumeRunId) {
       const resumed = await resumeRun(ctx.apiPort, resumeRunId);
       const state = await loadUiState(ctx.apiPort, resumeRunId, filters);
-      const status = statusModel(state.run);
+      const runView = uiRunView(state, resumeRunId);
+      const status = runView.status;
       const conv = resumed.ok
         ? renderConversationPane(status.state, status.text)
         : renderConversationPane('error', `error:resume:${resumed.status}`);
       const panes = {
         conv: conv.replace('<aside id="conv">', '<aside id="conv" hx-swap-oob="true">'),
-        exec: renderExecutionPane(state.run, filters),
+        exec: renderExecutionPane(state.run, filters, {
+          status,
+          emptyText: runView.execEmptyText
+        }),
         artifacts: renderArtifactsPane(state.artifacts, filters),
         statusState: resumed.ok ? status.state : 'error',
         statusText: resumed.ok ? status.text : `error:resume:${resumed.status}`
@@ -232,7 +318,10 @@ async function handleUiRoutes(req, res, ctx) {
         const page = renderPage({
           title: state.run ? `Run ${state.run.run_id}` : 'Jejakekal Harness',
           conv: renderConversationPane(panes.statusState, panes.statusText),
-          exec: renderExecutionPane(state.run, filters),
+          exec: renderExecutionPane(state.run, filters, {
+            status: { state: panes.statusState, text: panes.statusText },
+            emptyText: runView.execEmptyText
+          }),
           artifacts: renderArtifactsPane(state.artifacts, filters)
         });
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -247,19 +336,39 @@ async function handleUiRoutes(req, res, ctx) {
   }
 
   if (req.method === 'GET') {
-    const pollRunPrefix = '/ui/runs/';
-    const pollSuffix = '/poll';
-    if (pathname.startsWith(pollRunPrefix) && pathname.endsWith(pollSuffix)) {
-      const runIdRaw = pathname.slice(pollRunPrefix.length, pathname.length - pollSuffix.length);
-      const runId = runIdRaw.includes('/') ? null : decodeURIComponent(runIdRaw);
+    if (pathname.startsWith('/ui/runs/') && pathname.endsWith('/poll')) {
+      let runId = null;
+      try {
+        runId = decodeUiPollRouteRunId(pathname);
+      } catch (error) {
+        if (isRequestError(error)) {
+          sendPollErrorResponse(res, req.headers, filters, {
+            statusCode: error.status,
+            statusText: `error:${String(error.payload.error ?? 'invalid_run_id')}`
+          });
+          return true;
+        }
+        throw error;
+      }
       if (!runId) {
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
         res.end('not found');
         return true;
       }
       const state = await loadUiState(ctx.apiPort, runId, filters);
-      const status = statusModel(state.run);
-      const exec = renderExecutionPane(state.run, filters).replace(
+      if (state.runMissing) {
+        sendPollErrorResponse(res, req.headers, filters, {
+          statusCode: 404,
+          statusText: `error:${runId}:run_not_found`
+        });
+        return true;
+      }
+      const runView = uiRunView(state, runId);
+      const status = runView.status;
+      const exec = renderExecutionPane(state.run, filters, {
+        status,
+        emptyText: runView.execEmptyText
+      }).replace(
         '<section id="execution-plane" class="plane">',
         '<section id="execution-plane" class="plane" hx-swap-oob="true">'
       );
@@ -269,7 +378,10 @@ async function handleUiRoutes(req, res, ctx) {
         const page = renderPage({
           title: state.run ? `Run ${state.run.run_id}` : 'Run',
           conv: renderConversationPane(status.state, status.text),
-          exec: renderExecutionPane(state.run, filters),
+          exec: renderExecutionPane(state.run, filters, {
+            status,
+            emptyText: runView.execEmptyText
+          }),
           artifacts
         });
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -294,9 +406,13 @@ async function handleUiRoutes(req, res, ctx) {
     const isMainRoute = pathname === '/' || pathname === '/artifacts' || !!runId || !!artifactId;
     if (isMainRoute) {
       const state = await loadUiState(ctx.apiPort, runId, filters);
-      const status = statusModel(state.run);
+      const runView = uiRunView(state, runId);
+      const status = runView.status;
       const conv = renderConversationPane(status.state, status.text);
-      const exec = renderExecutionPane(state.run, filters);
+      const exec = renderExecutionPane(state.run, filters, {
+        status,
+        emptyText: runView.execEmptyText
+      });
 
       let artifacts = renderArtifactsPane(state.artifacts, filters);
       if (artifactId) {

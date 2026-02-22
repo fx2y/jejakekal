@@ -91,7 +91,12 @@ export function artifactListItemModel(artifact) {
   const row = asRecord(artifact);
   const prov = asRecord(row['prov']);
   const sourceHashes = prov['source_hashes'];
-  const sourceCount = Array.isArray(sourceHashes) ? sourceHashes.length : null;
+  const hash = asRecord(prov['hash']);
+  const sourceCount = Array.isArray(sourceHashes)
+    ? sourceHashes.length
+    : typeof hash['source_sha256'] === 'string' && String(hash['source_sha256']).length > 0
+      ? 1
+      : null;
   return {
     id: String(row['id'] ?? ''),
     run_id: String(row['run_id'] ?? ''),

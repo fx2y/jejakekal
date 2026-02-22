@@ -1,12 +1,12 @@
 import { DBOS, DBOSWorkflowConflictError } from '@dbos-inc/dbos-sdk';
 import { readFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { basename } from 'node:path';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { ingestDocument } from '../../../packages/pipeline/src/ingest.mjs';
 import { makeClient } from './db.mjs';
 import { callIdempotentEffect } from './effects.mjs';
 import { makeBundleArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
+import { defaultBundlesRootPath } from './bundles-root.mjs';
 import { buildArtifactProvenance, hashSource } from './artifacts/provenance.mjs';
 import { countArtifactsByRunId, insertArtifact } from './artifacts/repository.mjs';
 
@@ -144,7 +144,7 @@ async function defaultWorkflowImpl(input) {
   const bundlesRoot =
     typeof input.bundlesRoot === 'string' && input.bundlesRoot.length > 0
       ? input.bundlesRoot
-      : join(tmpdir(), 'jejakekal-run-bundles');
+      : process.env.JEJAKEKAL_BUNDLES_ROOT ?? defaultBundlesRootPath();
   const persisted = await DBOS.runStep(
     () =>
       persistArtifactsStep({

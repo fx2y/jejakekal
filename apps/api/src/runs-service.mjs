@@ -11,9 +11,10 @@ function normalizeOptionalString(value) {
 
 function normalizeSleepMs(value) {
   if (value == null) return undefined;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return undefined;
-  return Math.max(1, Math.floor(parsed));
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+    throw badRequest('invalid_run_payload');
+  }
+  return value;
 }
 
 /**
