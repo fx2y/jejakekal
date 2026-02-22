@@ -18,7 +18,7 @@ async function dockerAvailable() {
 test('sandbox runner mounts workspace read-only and exports artifact', { skip: !(await dockerAvailable()) }, async () => {
   const result = await runSandboxStep({
     image: 'alpine:3.22',
-    command: ['sh', '-lc', 'cat input.json > output.json'],
+    command: ['sh', '-lc', 'cat input/input.json > export/output.json'],
     input: '{"ok":true}',
     envAllowlist: []
   });
@@ -26,4 +26,16 @@ test('sandbox runner mounts workspace read-only and exports artifact', { skip: !
   assert.equal(result.code, 0);
   assert.match(result.payload, /"ok"/);
   assert.equal(result.payloadHash.length, 64);
+});
+
+test('sandbox runner blocks writes outside explicit export file', { skip: !(await dockerAvailable()) }, async () => {
+  const result = await runSandboxStep({
+    image: 'alpine:3.22',
+    command: ['sh', '-lc', 'set -e; echo hacked > pwn.txt; cat input/input.json > export/output.json'],
+    input: '{"ok":true}',
+    envAllowlist: []
+  });
+
+  assert.notEqual(result.code, 0);
+  assert.equal(result.payload, '');
 });

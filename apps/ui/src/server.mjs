@@ -2,25 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startApiServer } from '../../api/src/server.mjs';
-
-function onceAsync(fn) {
-  let done = false;
-  /** @type {Promise<void> | null} */
-  let inFlight = null;
-  return async () => {
-    if (done) return;
-    if (inFlight) {
-      await inFlight;
-      return;
-    }
-    inFlight = Promise.resolve()
-      .then(() => fn())
-      .finally(() => {
-        done = true;
-      });
-    await inFlight;
-  };
-}
+import { onceAsync } from '../../../packages/core/src/once-async.mjs';
 
 /**
  * @param {number} uiPort

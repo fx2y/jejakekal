@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applySchema, makeClient } from './db.mjs';
@@ -7,30 +7,14 @@ import { ensureDbosRuntime, shutdownDbosRuntime } from './dbos-runtime.mjs';
 import { closeServer, listenLocal, sendJson } from './http.mjs';
 import { handleRunsRoute } from './runs-routes.mjs';
 import { handleSystemRoute } from './system-routes.mjs';
-
-function onceAsync(fn) {
-  let done = false;
-  /** @type {Promise<void> | null} */
-  let inFlight = null;
-  return async () => {
-    if (done) return;
-    if (inFlight) {
-      await inFlight;
-      return;
-    }
-    inFlight = Promise.resolve()
-      .then(() => fn())
-      .finally(() => {
-        done = true;
-      });
-    await inFlight;
-  };
-}
+import { isRequestError } from './request-errors.mjs';
+import { onceAsync } from '../../../packages/core/src/once-async.mjs';
 
 /**
  * @param {number} port
  */
 export async function startApiServer(port = 4010) {
+  const keepBundles = process.env.JEJAKEKAL_BUNDLES_RETAIN === '1';
   const client = makeClient();
   await client.connect();
   await applySchema(client);
@@ -54,7 +38,11 @@ export async function startApiServer(port = 4010) {
 
       res.writeHead(404).end('not found');
     } catch (error) {
-      sendJson(res, 500, { error: String(error) });
+      if (isRequestError(error)) {
+        sendJson(res, error.status, error.payload);
+        return;
+      }
+      sendJson(res, 500, { error: 'internal_error' });
     }
   });
 
@@ -63,10 +51,14 @@ export async function startApiServer(port = 4010) {
     await closeServer(server);
     await shutdownDbosRuntime();
     await client.end();
+    if (!keepBundles) {
+      await rm(bundlesRoot, { recursive: true, force: true });
+    }
   });
 
   return {
     port: boundPort,
+    bundlesRoot,
     close
   };
 }

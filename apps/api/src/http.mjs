@@ -1,3 +1,5 @@
+import { badRequest } from './request-errors.mjs';
+
 /**
  * @param {import('node:http').IncomingMessage} req
  */
@@ -14,7 +16,12 @@ export async function readRequestBody(req) {
  */
 export async function readJsonRequest(req) {
   const body = await readRequestBody(req);
-  return JSON.parse(body || '{}');
+  if (!body) return {};
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw badRequest('invalid_json');
+  }
 }
 
 /**

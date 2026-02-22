@@ -1,9 +1,23 @@
 const RUNS_BASE = '/runs';
-const POLL_INTERVAL_MS = 25;
-const POLL_MAX_ATTEMPTS = 200;
+const POLL_INTERVAL_MS = readQueryNumber('pollIntervalMs', 50);
+const POLL_MAX_INTERVAL_MS = readQueryNumber('pollMaxIntervalMs', 750);
+const POLL_TIMEOUT_MS = readQueryNumber('pollTimeoutMs', 30_000);
+
+/**
+ * @param {string} key
+ * @param {number} fallback
+ */
+function readQueryNumber(key, fallback) {
+  if (typeof window === 'undefined') return fallback;
+  const raw = new URL(window.location.href).searchParams.get(key);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.floor(parsed));
+}
 
 function isTerminal(status) {
-  return status === 'done' || status === 'error';
+  return status === 'done' || status === 'error' || status === 'unknown';
 }
 
 /**
@@ -34,15 +48,18 @@ export async function getRun(runId) {
 
 /**
  * @param {string} runId
- * @param {{intervalMs?: number, maxAttempts?: number}} [opts]
+ * @param {{intervalMs?: number, maxIntervalMs?: number, timeoutMs?: number}} [opts]
  */
 export async function pollRun(runId, opts = {}) {
-  const intervalMs = opts.intervalMs ?? POLL_INTERVAL_MS;
-  const maxAttempts = opts.maxAttempts ?? POLL_MAX_ATTEMPTS;
+  let intervalMs = opts.intervalMs ?? POLL_INTERVAL_MS;
+  const maxIntervalMs = opts.maxIntervalMs ?? POLL_MAX_INTERVAL_MS;
+  const timeoutMs = opts.timeoutMs ?? POLL_TIMEOUT_MS;
+  const startedAt = performance.now();
 
   let run = await getRun(runId);
-  for (let i = 0; i < maxAttempts && !isTerminal(run.status); i += 1) {
+  while (!isTerminal(run.status) && performance.now() - startedAt < timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    intervalMs = Math.min(maxIntervalMs, Math.ceil(intervalMs * 1.5));
     run = await getRun(runId);
   }
   return run;

@@ -29,3 +29,12 @@ test('3-plane product promise path (ingest -> timeline -> artifacts)', async ({ 
   await expect(page.locator('#artifacts li')).toHaveCount(4);
   await expect(page.locator('[data-artifact-id="memo"]')).toBeVisible();
 });
+
+test('ui polling remains stable for long-running workflow when timeout configured', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4110/?sleepMs=6500&pollTimeoutMs=20000&pollIntervalMs=25');
+
+  await page.click('#run-workflow');
+  await expect(page.locator('#run-status')).toContainText('running');
+  await expect(page.locator('#run-status')).toContainText('done:', { timeout: 30_000 });
+  await expect(page.locator('#run-status')).toHaveAttribute('data-state', 'done');
+});

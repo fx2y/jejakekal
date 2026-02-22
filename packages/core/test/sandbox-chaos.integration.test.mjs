@@ -18,7 +18,7 @@ async function dockerAvailable() {
 test('chaos sandbox replay is stable for same input', { skip: !(await dockerAvailable()) }, async () => {
   const req = {
     image: 'alpine:3.22',
-    command: ['sh', '-lc', 'cat input.json > output.json'],
+    command: ['sh', '-lc', 'cat input/input.json > export/output.json'],
     input: '{"stable":true}',
     envAllowlist: []
   };

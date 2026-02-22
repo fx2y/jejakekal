@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { sha256 } from './hash.mjs';
 
@@ -36,9 +36,18 @@ function execChild(cmd, args, env) {
  */
 export async function runSandboxStep(req) {
   const scratch = await mkdtemp(join(tmpdir(), 'jejakekal-sbx-'));
-  const inFile = join(scratch, 'input.json');
-  const outFile = join(scratch, req.exportFile ?? 'output.json');
+  const inputDir = join(scratch, 'input');
+  const exportDir = join(scratch, 'export');
+  const exportName = basename(req.exportFile ?? 'output.json');
+  if (!exportName.endsWith('.json') || exportName.includes('/') || exportName.includes('\\')) {
+    throw new Error('invalid-export-file');
+  }
+  const inFile = join(inputDir, 'input.json');
+  const outFile = join(exportDir, exportName);
+  await mkdir(inputDir, { recursive: true });
+  await mkdir(exportDir, { recursive: true });
   await writeFile(inFile, req.input, 'utf8');
+  await writeFile(outFile, '', 'utf8');
 
   const env = { PATH: process.env.PATH ?? '' };
   for (const key of req.envAllowlist ?? []) {
@@ -54,25 +63,29 @@ export async function runSandboxStep(req) {
     'none',
     '--read-only',
     '-v',
-    `${scratch}:/workspace`,
+    `${inputDir}:/workspace/input:ro`,
+    '-v',
+    `${exportDir}:/workspace/export:rw`,
     '-w',
     '/workspace',
     req.image,
     ...req.command
   ];
 
-  const result = await execChild('docker', args, env);
-  const payload = result.code === 0 ? await readFile(outFile, 'utf8') : '';
-  const hash = payload ? sha256(payload) : '';
+  try {
+    const result = await execChild('docker', args, env);
+    const payload = result.code === 0 ? await readFile(outFile, 'utf8') : '';
+    const hash = payload ? sha256(payload) : '';
 
-  await rm(scratch, { recursive: true, force: true });
-
-  return {
-    code: result.code,
-    signal: result.signal,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    payload,
-    payloadHash: hash
-  };
+    return {
+      code: result.code,
+      signal: result.signal,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      payload,
+      payloadHash: hash
+    };
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }

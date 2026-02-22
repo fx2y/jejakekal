@@ -28,7 +28,7 @@ Spec-0 encoded many local decisions; risk is drift + tribal memory. This ADR com
 ## Model (compressed architecture)
 ```text
 Inputs -> Workflow Engine -> Deterministic Pipeline -> Run Bundle -> Golden/Review
-            | dbos status+steps     | raw/docir/chunks/memo      |
+            | dbos status+steps     | raw/docir/chunk-index/memo |
             | replay                | canonical JSON             +-> UI planes(state IDs)
             | idempotent effects    |                            +-> Perf gates
             +-> Sandbox executor (RO + explicit export + hash-stable)

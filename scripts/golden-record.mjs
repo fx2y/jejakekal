@@ -23,7 +23,7 @@ async function main() {
     artifacts: [
       { id: 'raw', path: ingest.paths.raw },
       { id: 'docir', path: ingest.paths.docir },
-      { id: 'chunks', path: ingest.paths.chunkIndex },
+      { id: 'chunk-index', path: ingest.paths.chunkIndex },
       { id: 'memo', path: ingest.paths.memo }
     ],
     citations: [{ source: 'golden/corpus/doc-a.txt', confidence: 1 }]

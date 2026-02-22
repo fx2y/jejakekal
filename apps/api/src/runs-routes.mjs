@@ -1,9 +1,11 @@
 import { readJsonRequest, sendJson } from './http.mjs';
 import { exportRunBundle } from './export-run.mjs';
 import { readRun, normalizeRunStartPayload, startRunDurably } from './runs-service.mjs';
+import { decodeAndValidateRunId } from './run-id.mjs';
 
 function getPathname(url) {
-  return new URL(url, 'http://127.0.0.1').pathname;
+  const queryIndex = url.indexOf('?');
+  return queryIndex === -1 ? url : url.slice(0, queryIndex);
 }
 
 function decodeRunId(pathname) {
@@ -11,7 +13,7 @@ function decodeRunId(pathname) {
   if (!pathname.startsWith(prefix)) return null;
   const raw = pathname.slice(prefix.length);
   if (!raw || raw.includes('/')) return null;
-  return decodeURIComponent(raw);
+  return decodeAndValidateRunId(raw);
 }
 
 function decodeRunExportId(pathname) {
@@ -20,7 +22,7 @@ function decodeRunExportId(pathname) {
   if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
   const raw = pathname.slice(prefix.length, pathname.length - suffix.length);
   if (!raw || raw.includes('/')) return null;
-  return decodeURIComponent(raw);
+  return decodeAndValidateRunId(raw);
 }
 
 /**
@@ -34,7 +36,7 @@ export async function handleRunsRoute(req, res, ctx) {
 
   if (req.method === 'POST' && pathname === '/runs') {
     const payload = normalizeRunStartPayload(await readJsonRequest(req));
-    const { runId } = await startRunDurably(payload);
+    const { runId } = await startRunDurably(ctx.client, payload);
     const run = await readRun(ctx.client, runId);
     sendJson(res, 202, {
       run_id: runId,

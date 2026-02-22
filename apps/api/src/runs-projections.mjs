@@ -62,7 +62,7 @@ export function mapDbosStatusToApiStatus(dbosStatus) {
     case 'RUNNING':
       return 'running';
     default:
-      return 'running';
+      return 'unknown';
   }
 }
 

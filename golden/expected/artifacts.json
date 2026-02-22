@@ -8,7 +8,7 @@
     "path": "golden/generated/golden-doc-a.docir.json"
   },
   {
-    "id": "chunks",
+    "id": "chunk-index",
     "path": "golden/generated/golden-doc-a.chunks.json"
   },
   {
