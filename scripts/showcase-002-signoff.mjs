@@ -172,6 +172,45 @@ async function exportRun(baseUrl, runId) {
 
 /**
  * @param {string} baseUrl
+ * @param {string} runId
+ */
+async function resumeRun(baseUrl, runId) {
+  const res = await fetch(`${baseUrl}/runs/${encodeURIComponent(runId)}/resume`, {
+    method: 'POST'
+  });
+  return { status: res.status, json: await res.json() };
+}
+
+/**
+ * @param {string} baseUrl
+ * @param {string} query
+ */
+async function listArtifacts(baseUrl, query = '') {
+  const suffix = query ? `?${query}` : '';
+  const res = await fetch(`${baseUrl}/artifacts${suffix}`);
+  return { status: res.status, json: await res.json() };
+}
+
+/**
+ * @param {string} baseUrl
+ * @param {string} artifactId
+ */
+async function getArtifact(baseUrl, artifactId) {
+  const res = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
+  return { status: res.status, json: await res.json() };
+}
+
+/**
+ * @param {string} baseUrl
+ * @param {string} artifactId
+ */
+async function downloadArtifact(baseUrl, artifactId) {
+  const res = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}/download`);
+  return { status: res.status, text: await res.text(), contentType: res.headers.get('content-type') ?? '' };
+}
+
+/**
+ * @param {string} baseUrl
  * @param {string} encodedPath
  */
 async function curlPathAsIs(baseUrl, encodedPath) {
@@ -195,6 +234,28 @@ async function curlPathAsIs(baseUrl, encodedPath) {
  */
 function isCanonicalArtifactIds(ids) {
   return JSON.stringify(ids) === JSON.stringify(['raw', 'docir', 'chunk-index', 'memo']);
+}
+
+/**
+ * @param {string} runId
+ */
+async function cancelWorkflow(runId) {
+  const result = await runCommand(
+    'pnpm',
+    [
+      '--filter',
+      '@jejakekal/api',
+      'exec',
+      'dbos',
+      'workflow',
+      'cancel',
+      '-s',
+      String(process.env.DBOS_SYSTEM_DATABASE_URL),
+      runId
+    ],
+    { cwd: process.cwd() }
+  );
+  assert(result.ok, `dbos workflow cancel failed: ${result.stderr || result.stdout}`);
 }
 
 async function main() {
@@ -285,6 +346,33 @@ async function main() {
       return { base_url: api.baseUrl };
     });
 
+    await step('api.command_router', async () => {
+      const slash = await postRun(api.baseUrl, { cmd: '/doc c5-command-router-slash', sleepMs: 10 });
+      assert(slash.status === 202, `slash cmd expected 202 got ${slash.status}`);
+      const canonical = await postRun(api.baseUrl, {
+        intent: 'doc',
+        args: { source: 'c5-command-router-canonical' },
+        sleepMs: 10
+      });
+      assert(canonical.status === 202, `canonical intent expected 202 got ${canonical.status}`);
+      const slashRunId = String(slash.json.run_id ?? '');
+      const canonicalRunId = String(canonical.json.run_id ?? '');
+      assert(slashRunId, 'slash cmd missing run_id');
+      assert(canonicalRunId, 'canonical payload missing run_id');
+      const client = await ensureDbClient();
+      const rows = await client.query(
+        `SELECT cmd, args, run_id
+         FROM chat_event
+         WHERE run_id = ANY($1::text[])
+         ORDER BY created_at ASC`,
+        [[slashRunId, canonicalRunId]]
+      );
+      assert(rows.rows.length === 2, `chat_event rows for command router expected 2 got ${rows.rows.length}`);
+      assert(rows.rows.every((row) => typeof row.cmd === 'string'), 'chat_event cmd missing');
+      assert(rows.rows.every((row) => row.args && typeof row.args === 'object'), 'chat_event args missing');
+      return { run_ids: [slashRunId, canonicalRunId], chat_rows: rows.rows.length };
+    });
+
     const happy = await step('api.happy', async () => {
       const started = await postRun(api.baseUrl, {
         source: 'alpha\nbeta [low]\ngamma',
@@ -333,6 +421,27 @@ async function main() {
       return { run_bundle_path: bundlePath, artifact_ids: artifactIds, files };
     });
     summary.samples.bundle_path = exported.run_bundle_path;
+
+    await step('api.artifact_routes', async () => {
+      const runId = String(summary.samples.happy_run_id);
+      const artifactId = `${runId}:raw`;
+      const listed = await listArtifacts(api.baseUrl, 'type=raw&visibility=user');
+      assert(listed.status === 200, `GET /artifacts expected 200 got ${listed.status}`);
+      assert(Array.isArray(listed.json), 'artifact list is not array');
+      assert(
+        listed.json.some((row) => row?.id === artifactId),
+        `artifact list missing ${artifactId}`
+      );
+      const detail = await getArtifact(api.baseUrl, artifactId);
+      assert(detail.status === 200, `GET /artifacts/:id expected 200 got ${detail.status}`);
+      assert(detail.json?.meta?.id === artifactId, `artifact detail meta.id mismatch ${JSON.stringify(detail.json)}`);
+      assert(detail.json?.prov?.run_id === runId, `artifact detail prov.run_id mismatch ${JSON.stringify(detail.json)}`);
+      const blob = await downloadArtifact(api.baseUrl, artifactId);
+      assert(blob.status === 200, `GET /artifacts/:id/download expected 200 got ${blob.status}`);
+      assert(blob.contentType.startsWith('text/plain'), `artifact download content-type ${blob.contentType}`);
+      assert(blob.text.includes('alpha'), 'artifact download missing expected raw source content');
+      return { artifact_id: artifactId, list_count: listed.json.length, content_type: blob.contentType };
+    });
 
     await step('db.truth', async () => {
       const client = await ensureDbClient();
@@ -396,12 +505,10 @@ async function main() {
         [runId]
       );
       const exportedRun = await exportRun(api.baseUrl, runId);
-      assert(exportedRun.status === 422, `source_unrecoverable expected 422 got ${exportedRun.status}`);
-      assert(
-        exportedRun.json.error === 'source_unrecoverable',
-        `source_unrecoverable payload ${JSON.stringify(exportedRun.json)}`
-      );
-      return { run_id: runId, status: exportedRun.status };
+      assert(exportedRun.status === 200, `source_unrecoverable fallback expected 200 got ${exportedRun.status}`);
+      const artifactIds = (exportedRun.json.artifacts ?? []).map((row) => row.id);
+      assert(isCanonicalArtifactIds(artifactIds), `source_unrecoverable fallback artifacts ${JSON.stringify(artifactIds)}`);
+      return { run_id: runId, status: exportedRun.status, artifact_ids: artifactIds };
     });
 
     await step('kill9.start', async () => {
@@ -446,6 +553,39 @@ async function main() {
       return { run_id: runId, status: done.status, dbos_status: done.dbos_status, steps: names };
     });
     summary.samples.kill9_run_id = kill9.run_id;
+
+    await step('resume.endpoint_drill', async () => {
+      const started = await postRun(api.baseUrl, { cmd: '/doc c5-resume-endpoint', sleepMs: 2500 });
+      assert(started.status === 202, `resume drill POST expected 202 got ${started.status}`);
+      const runId = String(started.json.run_id ?? '');
+      await waitForCondition(
+        async () => {
+          const run = await readRun(api.baseUrl, runId);
+          return run.status === 200 && run.json?.status === 'running';
+        },
+        `resume drill running ${runId}`,
+        10_000,
+        50
+      );
+      await cancelWorkflow(runId);
+      await waitForCondition(
+        async () => {
+          const run = await readRun(api.baseUrl, runId);
+          return run.status === 200 && run.json?.dbos_status === 'CANCELLED';
+        },
+        `resume drill cancelled ${runId}`,
+        10_000,
+        100
+      );
+      const resumed = await resumeRun(api.baseUrl, runId);
+      assert(resumed.status === 202, `resume endpoint expected 202 got ${resumed.status}`);
+      assert(resumed.json?.run_id === runId, `resume response mismatch ${JSON.stringify(resumed.json)}`);
+      const done = await waitForRunTerminal(api.baseUrl, runId);
+      assert(done?.status === 'done', `resume drill terminal status ${String(done?.status)}`);
+      assert(done?.dbos_status === 'SUCCESS', `resume drill dbos_status ${String(done?.dbos_status)}`);
+      assert(done.timeline.filter((row) => row.function_name === 'prepare').length === 1, 'resume drill duplicated prepare');
+      return { run_id: runId, status: done.status, dbos_status: done.dbos_status };
+    });
 
     await step('cli_api.parity', async () => {
       const runId = String(summary.samples.happy_run_id);

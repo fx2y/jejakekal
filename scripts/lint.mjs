@@ -5,6 +5,9 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 
 const includeExt = new Set(['.mjs', '.md', '.json', '.yaml', '.yml', '.toml', '.sh', '.txt', '.sql']);
+const truthLeakToken = 'assistant' + 'Answer';
+const truthLeakScanPrefixes = ['apps/', 'packages/', 'scripts/'];
+const truthLeakAllowPaths = new Set(['apps/ui/src/ui-render.mjs']);
 
 function extname(path) {
   const idx = path.lastIndexOf('.');
@@ -23,7 +26,18 @@ function lintContent(path, source) {
       issues.push(`${path}:${i + 1}: leading-tab`);
     }
   }
+  if (shouldCheckTruthLeak(path) && source.includes(truthLeakToken) && !truthLeakAllowPaths.has(path)) {
+    issues.push(`${path}: truth-leak`);
+  }
   return issues;
+}
+
+function shouldCheckTruthLeak(path) {
+  return (
+    path.endsWith('.mjs') &&
+    truthLeakScanPrefixes.some((prefix) => path.startsWith(prefix)) &&
+    !path.includes('/test/')
+  );
 }
 
 async function main() {

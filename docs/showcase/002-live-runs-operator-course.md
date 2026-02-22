@@ -1,10 +1,10 @@
-# 002 - Live `/runs` Operator Course (Sprint1 Kernel)
+# 002 - Live `/runs` + `/artifacts` Operator Course (Sprint2 UX)
 
 ## Why this exists
 You are not validating "a demo". You are validating a kernel contract: durable async runs, DBOS truth projection, deterministic export, strict typed failures, and release-gated proof.
 
 ## Non-negotiables
-- API surface: `/runs*` + `/healthz` only.
+- API surface: `/runs*` + `/artifacts*` + `/healthz` (additive; `/runs*` compat remains mandatory).
 - Truth tables: `dbos.workflow_status`, `dbos.operation_outputs`.
 - Side effects: only `callIdempotentEffect(effect_key, ...)`.
 - UI contract: `#conversation-plane #execution-plane #artifact-plane #run-status[data-state]`.
@@ -27,11 +27,13 @@ API_PORT=4010 UI_PORT=4110 mise x node@24.13.1 -- node apps/ui/src/server.mjs
 ```bash
 xdg-open 'http://127.0.0.1:4110/?sleepMs=250' || open 'http://127.0.0.1:4110/?sleepMs=250' || true
 ```
-3. Click `Run Workflow` once.
+3. Submit command `/doc alpha beta gamma` once.
 4. Validate:
 - `#run-status[data-state]`: `idle -> running -> done`.
 - `#timeline` has `prepare`, `DBOS.sleep`, `side-effect`, `finalize`.
 - `#artifacts` has `raw,docir,chunk-index,memo`.
+- Execution pane polls with htmx (`hx-trigger="every 1s"`) while running.
+- Direct artifact links (`/artifacts/:id`) and run links (`/runs/:id`) open full page shell in new tab.
 
 ## 2. API happy path (QA loop)
 1. Start API:
@@ -55,16 +57,24 @@ while :; do
 done
 echo "$RUN" | jq '{run_id,status,dbos_status,timeline_len:(.timeline|length)}'
 ```
-4. Export:
+4. Artifact surfaces (list/detail/download):
+```bash
+curl -sS "http://127.0.0.1:4010/artifacts?type=raw&visibility=user" | jq '.[0] | {id,run_id,type,status}'
+curl -sS "http://127.0.0.1:4010/artifacts/${RID}:raw" | jq '{meta,prov,content_preview:(.content|tostring|.[0:40])}'
+curl -sS "http://127.0.0.1:4010/artifacts/${RID}:raw/download" | head -c 80; echo
+```
+5. Export:
 ```bash
 EXP=$(curl -sS "http://127.0.0.1:4010/runs/$RID/export")
 echo "$EXP" | jq '{run_id,status,dbos_status,artifact_ids:(.artifacts|map(.id)),run_bundle_path}'
 ```
-5. Assert:
+6. Assert:
 - POST is `202` async durable-start.
 - Terminal normally `done` + `dbos_status=SUCCESS`.
 - `timeline` ordered by `function_id` asc.
 - `artifact_ids` exactly `["raw","docir","chunk-index","memo"]`.
+- `/artifacts/:id` detail returns `meta+content+prov`.
+- `/artifacts/:id/download` preserves raw payload bytes/content-type.
 
 ## 3. DB truth correlation (QA loop)
 ```bash
@@ -100,7 +110,7 @@ curl -sS -i -X POST http://127.0.0.1:4010/runs -H 'content-type: application/jso
 ```
 Expect: `409 {"error":"workflow_id_payload_mismatch","workflow_id":"..."}`.
 
-### 4.4 Export source unrecoverable -> typed 422 (fail-closed)
+### 4.4 Export source unrecoverable timeline field -> persisted-artifact fallback still exports
 ```bash
 RID2=$(curl -sS -X POST http://127.0.0.1:4010/runs -H 'content-type: application/json' \
   -d '{"source":"will-be-removed","sleepMs":10}' | jq -r '.run_id')
@@ -112,7 +122,7 @@ done
 mise run psql -- -c "update dbos.operation_outputs set output='{\"json\":{\"prepared\":\"MISSING_SOURCE\"}}'::jsonb where workflow_uuid='${RID2}' and function_name='prepare';"
 curl -sS -i "http://127.0.0.1:4010/runs/$RID2/export"
 ```
-Expect: `422 {"error":"source_unrecoverable","run_id":"..."}`.
+Expect: `200` and canonical artifact IDs still present (export reads persisted artifact rows first).
 
 ## 5. Durability + correctness proofs (FDE loop)
 ### 5.1 Canonical automated proof lanes
@@ -159,6 +169,8 @@ Assert: same semantics for id/status/name/recovery/step order.
 - IDs exist: `#conversation-plane #execution-plane #artifact-plane #run-status #timeline #artifacts`.
 - FSM only: `idle|running|done|error`.
 - `unknown` backend status must not spin forever; UI escalates to error path.
+- HX contract: `HX-Request` => fragment, `HX-History-Restore-Request` => full-page shell fallback.
+- Artifact viewer deep-link `/artifacts/:id` renders full shell and can navigate to `/runs/:id?step=<producer_function_id>`.
 
 ### 6.2 Automated e2e
 ```bash
@@ -167,7 +179,28 @@ mise run ui:e2e
 Includes:
 - 3-plane promise path.
 - status FSM transitions.
+- HX history-restore full-page fallback + OOB poll updates (`#exec/#artifacts/#run-status`).
 - long-run polling stability via `pollTimeoutMs,pollIntervalMs,pollMaxIntervalMs`.
+
+### 6.3 Manual resume endpoint drill
+```bash
+RIDR=$(curl -sS -X POST http://127.0.0.1:4010/runs \
+  -H 'content-type: application/json' \
+  -d '{"cmd":"/doc resume-drill","sleepMs":2500}' | jq -r '.run_id')
+while :; do
+  R=$(curl -sS "http://127.0.0.1:4010/runs/$RIDR")
+  [[ $(jq -r '.status' <<<"$R") == running ]] && break
+  sleep 0.05
+done
+pnpm --filter @jejakekal/api exec dbos workflow cancel -s "$DBOS_SYSTEM_DATABASE_URL" "$RIDR"
+while :; do
+  R=$(curl -sS "http://127.0.0.1:4010/runs/$RIDR")
+  [[ $(jq -r '.dbos_status' <<<"$R") == CANCELLED ]] && break
+  sleep 0.1
+done
+curl -sS -X POST "http://127.0.0.1:4010/runs/$RIDR/resume" | jq
+```
+Expect: `202 {"run_id":"...","status":"running"}` then terminal `done/SUCCESS` without duplicated completed steps.
 
 ## 7. Export/run-bundle audit loop
 1. Get bundle path from export:
@@ -229,6 +262,9 @@ Interpretation:
 - PG unavailable: `mise run up && mise run reset`.
 - Stack unhealthy: `docker compose -f infra/compose/docker-compose.yml ps --format json | jq -s`.
 - Hostile probe false-negative: use `curl --path-as-is`.
+- Artifact route 4xx confusion: verify raw-path hostile probe vs decoded ID; retry with `curl --path-as-is` on `/artifacts/%2E%2E`.
+- Resume stuck/non-visible: confirm `dbos_status` is `CANCELLED|RETRIES_EXCEEDED`; UI intentionally hides resume button otherwise.
+- Browser back/history glitch: verify history restore path returns full shell (htmx `historyRestoreAsHxRequest=false`).
 - Replay/idempotency flake: inspect determinism freeze + effect-key path + DB row ordering.
 - Golden drift: inspect diff intent; then re-record if intentional.
 - CI/local mismatch: rerun only `mise run ci`; remove shadow command paths.
@@ -245,7 +281,7 @@ Outputs `.cache/showcase-002-signoff.json` with machine-checkable verdict (`ok`,
 3. Invalid JSON 400.
 4. Encoded traversal 400.
 5. workflowId payload mismatch 409.
-6. Export source unrecoverable 422.
+6. Export source unrecoverable timeline field still yields persisted-artifact export.
 7. SIGKILL mid-sleep resume.
 8. Durable-start post-response kill + restart.
 9. Retry/backoff flaky workflow proof.

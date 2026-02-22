@@ -301,6 +301,13 @@ test('C2 chat ledger invariant: POST /runs writes cmd,args,run_id only', async (
   assert.equal(rows.rows[0].run_id, started.run_id);
   assert.ok(rows.rows[0].created_at);
   assert.equal(Object.hasOwn(rows.rows[0], 'answer'), false);
+
+  const leakCount = await client.query(
+    `SELECT count(*)::int AS n
+     FROM chat_event
+     WHERE args ? 'assistantAnswer'`
+  );
+  assert.equal(leakCount.rows[0].n, 0);
 });
 
 test('C2 artifact routes: list/detail/download and typed id errors', async (t) => {

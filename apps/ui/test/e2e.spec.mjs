@@ -63,8 +63,10 @@ test('C3 dual-ID shell + command flow reaches terminal status', async ({ page })
   await page.fill('#cmd-input', '/doc alpha beta gamma');
   await page.click('#command-form button[type="submit"]');
   await expect(page.locator('#run-status')).toContainText('running:', { timeout: 10_000 });
+  await expect(page.locator('#exec')).toHaveAttribute('hx-trigger', 'every 1s');
   await expect(page.locator('#run-status')).toContainText('done:', { timeout: 30_000 });
   await expect(page.locator('#run-status')).toHaveAttribute('data-state', 'done');
+  await expect(page.locator('#conv')).not.toContainText('alpha beta gamma');
 
   await expect(page.locator('#timeline li[data-function-id=\"0\"]')).toContainText('0:prepare:ok');
   await expect(page.locator('#timeline li[data-function-id=\"1\"]')).toContainText('1:DBOS.sleep:ok');
@@ -124,6 +126,33 @@ test('C3 HX polling endpoint returns OOB updates for exec+artifacts+status', asy
   expect(html).toContain('id="artifacts" hx-swap-oob="true"');
   expect(html).toContain('id="run-status"');
   expect(html).toContain('hx-swap-oob="true"');
+});
+
+test('C5 HX history restore on run route returns full page shell', async ({ request }) => {
+  const create = await request.post(`${baseUrl}/runs`, {
+    data: { cmd: '/doc c5-history-restore' }
+  });
+  expect(create.status()).toBe(202);
+  const started = await create.json();
+
+  for (let i = 0; i < 120; i += 1) {
+    const runRes = await request.get(
+      `http://127.0.0.1:${runtime.apiPort}/runs/${encodeURIComponent(started.run_id)}`
+    );
+    expect(runRes.status()).toBe(200);
+    const run = await runRes.json();
+    if (run.status === 'done') break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  const restoreRes = await request.get(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}`, {
+    headers: { 'HX-Request': 'true', 'HX-History-Restore-Request': 'true' }
+  });
+  expect(restoreRes.status()).toBe(200);
+  const html = await restoreRes.text();
+  expect(html).toContain('<!doctype html>');
+  expect(html).toContain('id="main"');
+  expect(html).toContain('id="execution-plane"');
 });
 
 test('C4 artifact viewer deep-link focuses producing execution step', async ({ page, request }) => {
