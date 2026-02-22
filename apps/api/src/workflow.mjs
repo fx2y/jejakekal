@@ -1,123 +1,99 @@
-import { callIdempotentEffect } from './effects.mjs';
+import { ensureDbosRuntime } from './dbos-runtime.mjs';
+import { startDefaultWorkflowRun } from './dbos-workflows.mjs';
 
-/**
- * @typedef {{
- * name: string,
- * run: (ctx: {workflowId:string, client: import('pg').Client, stepName:string, sideEffectKey:(suffix:string)=>string}) => Promise<Record<string, unknown>>
- * }} WorkflowStep
- */
-
-/**
- * @param {import('pg').Client} client
- * @param {string} workflowId
- * @param {string} stepName
- */
-async function checkpoint(client, workflowId, stepName) {
-  const row = await client.query(
-    'SELECT status, output_json FROM workflow_steps WHERE workflow_id = $1 AND step_name = $2',
-    [workflowId, stepName]
-  );
-  return row.rows[0] ?? null;
-}
-
-/**
- * @param {import('pg').Client} client
- * @param {string} workflowId
- * @param {string} stepName
- * @param {string} phase
- * @param {Record<string, unknown>} payload
- */
-async function logEvent(client, workflowId, stepName, phase, payload) {
-  await client.query(
-    'INSERT INTO workflow_events (workflow_id, step_name, phase, payload_json) VALUES ($1, $2, $3, $4::jsonb)',
-    [workflowId, stepName, phase, JSON.stringify(payload)]
-  );
-}
-
-/**
- * @param {{client: import('pg').Client, workflowId: string, steps: WorkflowStep[], crashAfterStep?: string}} params
- */
-export async function runWorkflow(params) {
-  const timeline = [];
-
-  for (const step of params.steps) {
-    const existing = await checkpoint(params.client, params.workflowId, step.name);
-    if (existing && existing.status === 'completed') {
-      timeline.push({ step: step.name, phase: 'resume-skip', output: existing.output_json });
-      await logEvent(params.client, params.workflowId, step.name, 'resume-skip', existing.output_json ?? {});
-      continue;
+function parseDbosCell(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return value;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && 'json' in parsed) {
+      return parsed.json;
     }
-
-    await logEvent(params.client, params.workflowId, step.name, 'start', {});
-
-    const output = await step.run({
-      workflowId: params.workflowId,
-      client: params.client,
-      stepName: step.name,
-      sideEffectKey: (suffix) => `${params.workflowId}:${step.name}:${suffix}`
-    });
-
-    await params.client.query(
-      `INSERT INTO workflow_steps (workflow_id, step_name, status, output_json)
-       VALUES ($1, $2, 'completed', $3::jsonb)
-       ON CONFLICT (workflow_id, step_name)
-       DO UPDATE SET status = EXCLUDED.status, output_json = EXCLUDED.output_json, updated_at = NOW()`,
-      [params.workflowId, step.name, JSON.stringify(output)]
-    );
-
-    await logEvent(params.client, params.workflowId, step.name, 'completed', output);
-    timeline.push({ step: step.name, phase: 'completed', output });
-
-    if (params.crashAfterStep && params.crashAfterStep === step.name) {
-      throw new Error(`forced-crash:${step.name}`);
-    }
+    return parsed;
+  } catch {
+    return value;
   }
+}
 
-  return timeline;
+/**
+ * @param {import('pg').Client} client
+ * @param {string} workflowId
+ */
+export async function readWorkflowStatus(client, workflowId) {
+  const res = await client.query(
+    `SELECT workflow_uuid, status, name, created_at, updated_at, recovery_attempts, executor_id
+     FROM dbos.workflow_status
+     WHERE workflow_uuid = $1`,
+    [workflowId]
+  );
+  if (!res.rows[0]) return null;
+  const row = res.rows[0];
+  return {
+    workflow_uuid: row.workflow_uuid,
+    status: row.status,
+    name: row.name,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    recovery_attempts: row.recovery_attempts == null ? null : Number(row.recovery_attempts),
+    executor_id: row.executor_id
+  };
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {string} workflowId
+ */
+export async function readOperationOutputs(client, workflowId) {
+  const res = await client.query(
+    `SELECT workflow_uuid, function_id, function_name, started_at_epoch_ms, completed_at_epoch_ms, output, error
+     FROM dbos.operation_outputs
+     WHERE workflow_uuid = $1
+     ORDER BY function_id ASC`,
+    [workflowId]
+  );
+
+  return res.rows.map((row) => ({
+    workflow_uuid: row.workflow_uuid,
+    function_id: Number(row.function_id),
+    function_name: row.function_name,
+    started_at_epoch_ms: row.started_at_epoch_ms == null ? null : Number(row.started_at_epoch_ms),
+    completed_at_epoch_ms: row.completed_at_epoch_ms == null ? null : Number(row.completed_at_epoch_ms),
+    output: parseDbosCell(row.output),
+    error: parseDbosCell(row.error)
+  }));
+}
+
+/**
+ * Compatibility projection for pre-C2 `/api/timeline/*` payloads.
+ * @param {import('pg').Client} client
+ * @param {string} workflowId
+ */
+export async function readTimeline(client, workflowId) {
+  const rows = await readOperationOutputs(client, workflowId);
+  return rows.map((row) => ({
+    index: row.function_id,
+    step: row.function_name,
+    phase: row.error ? 'error' : 'completed',
+    payload: row.error ? { error: row.error } : (row.output ?? {}),
+    output: row.error ? undefined : (row.output ?? {})
+  }));
 }
 
 /**
  * @param {{client: import('pg').Client, workflowId:string, value:string}} params
  */
-export function defaultWorkflow(params) {
-  /** @type {WorkflowStep[]} */
-  const steps = [
-    {
-      name: 'prepare',
-      run: async () => ({ prepared: params.value.toUpperCase() })
-    },
-    {
-      name: 'side-effect',
-      run: async ({ client, sideEffectKey }) => {
-        const result = await callIdempotentEffect(client, sideEffectKey('email'), async () => ({
-          sent: true,
-          timestamp: Date.now()
-        }));
-        return { sent: result.response.sent, replayed: result.replayed };
-      }
-    },
-    {
-      name: 'finalize',
-      run: async () => ({ ok: true })
-    }
-  ];
-
-  return runWorkflow({ client: params.client, workflowId: params.workflowId, steps });
+export async function defaultWorkflow(params) {
+  await ensureDbosRuntime();
+  const handle = await startDefaultWorkflowRun({ workflowId: params.workflowId, value: params.value });
+  await handle.getResult();
+  return readTimeline(params.client, handle.workflowID);
 }
 
 /**
- * @param {import('pg').Client} client
- * @param {string} workflowId
+ * Legacy custom-engine hook intentionally removed in C1 substrate swap.
  */
-export async function readTimeline(client, workflowId) {
-  const res = await client.query(
-    'SELECT event_index, step_name, phase, payload_json FROM workflow_events WHERE workflow_id = $1 ORDER BY event_index ASC',
-    [workflowId]
-  );
-  return res.rows.map((row) => ({
-    index: Number(row.event_index),
-    step: row.step_name,
-    phase: row.phase,
-    payload: row.payload_json
-  }));
+export async function runWorkflow(_params) {
+  throw new Error('runWorkflow removed in C1; use DBOS-backed workflow facade');
 }
+
+export { startDefaultWorkflowRun };

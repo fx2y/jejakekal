@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@dbos-inc/dbos-sdk": "^4.9.11",
     "@jejakekal/core": "workspace:*",
     "@jejakekal/pipeline": "workspace:*",
     "pg": "8.16.3"

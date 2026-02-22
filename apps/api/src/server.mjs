@@ -3,6 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applySchema, makeClient } from './db.mjs';
+import { ensureDbosRuntime, shutdownDbosRuntime } from './dbos-runtime.mjs';
 import { closeServer, listenLocal, sendJson } from './http.mjs';
 import { handleLegacyApiRoute } from './legacy-api-routes.mjs';
 
@@ -13,6 +14,7 @@ export async function startApiServer(port = 4010) {
   const client = makeClient();
   await client.connect();
   await applySchema(client);
+  await ensureDbosRuntime();
 
   const bundlesRoot = await mkdtemp(join(tmpdir(), 'jejakekal-run-bundles-'));
 
@@ -40,6 +42,7 @@ export async function startApiServer(port = 4010) {
     port,
     close: async () => {
       await closeServer(server);
+      await shutdownDbosRuntime();
       await client.end();
     }
   };

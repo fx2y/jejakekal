@@ -1,22 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultWorkflow, readTimeline } from '../src/workflow.mjs';
+import { shutdownDbosRuntime } from '../src/dbos-runtime.mjs';
+import { defaultWorkflow, readOperationOutputs, readWorkflowStatus } from '../src/workflow.mjs';
 import { setupDbOrSkip } from './helpers.mjs';
 import { freezeDeterminism } from '../../../packages/core/src/determinism.mjs';
 
-test('workflow runs through all deterministic steps', async (t) => {
+test('C1 smoke: DBOS run writes dbos.workflow_status + dbos.operation_outputs', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
   const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
   t.after(() => unfreeze());
+  t.after(async () => {
+    await shutdownDbosRuntime();
+  });
 
-  const workflowId = `wf-${Date.now()}`;
+  const workflowId = `wf-${process.pid}-${Date.now()}`;
   const timeline = await defaultWorkflow({ client, workflowId, value: 'abc' });
 
-  assert.equal(timeline.length, 3);
-  assert.equal(timeline[0].step, 'prepare');
-  assert.equal(timeline[2].step, 'finalize');
+  assert.ok(timeline.length >= 3);
+  assert.ok(timeline.some((row) => row.step === 'prepare'));
+  assert.ok(timeline.some((row) => row.step === 'side-effect'));
+  assert.ok(timeline.some((row) => row.step === 'finalize'));
 
-  const events = await readTimeline(client, workflowId);
-  assert.ok(events.length >= 6);
+  const header = await readWorkflowStatus(client, workflowId);
+  assert.equal(header?.workflow_uuid, workflowId);
+  assert.equal(header?.status, 'SUCCESS');
+
+  const outputs = await readOperationOutputs(client, workflowId);
+  assert.ok(outputs.length >= 3);
+  assert.deepEqual(
+    outputs.map((row) => row.function_id),
+    [...outputs.map((row) => row.function_id)].sort((a, b) => a - b)
+  );
+  assert.ok(outputs.every((row) => row.function_id >= 0));
 });

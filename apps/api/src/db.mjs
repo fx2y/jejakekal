@@ -28,7 +28,14 @@ export async function applySchema(client) {
 /**
  * @param {Client} client
  */
-export async function resetSchema(client) {
-  await client.query('DROP TABLE IF EXISTS workflow_events, workflow_steps, side_effects CASCADE;');
+export async function resetAppTables(client) {
   await applySchema(client);
+  await client.query('TRUNCATE side_effects RESTART IDENTITY CASCADE');
+}
+
+/**
+ * @param {Client} client
+ */
+export async function resetSchema(client) {
+  await resetAppTables(client);
 }
