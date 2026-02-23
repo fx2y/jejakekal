@@ -3,7 +3,7 @@ import { makeManifest, writeRunBundle } from '../../../packages/core/src/run-bun
 import { readRun } from './runs-service.mjs';
 import { toBundleTimeline } from './runs-projections.mjs';
 import { unprocessable } from './request-errors.mjs';
-import { parseArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
+import { parsePersistedArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
 import { assertArtifactBlobsReadable } from './artifact-blobs.mjs';
 import { listArtifactsByRunId } from './artifacts/repository.mjs';
 import { assertFrozenArtifactType } from './contracts.mjs';
@@ -52,7 +52,7 @@ function mapPersistedArtifactsForExport(rows, bundlesRoot) {
     .map((type) => byType.get(type))
     .filter(Boolean)
     .map((row) => {
-      const parsed = parseArtifactUri(row.uri);
+      const parsed = parsePersistedArtifactUri(row.uri);
       const path =
         parsed.scheme === 'bundle'
           ? resolveWithinRoot(bundlesRoot, parsed.runId, parsed.relativePath)

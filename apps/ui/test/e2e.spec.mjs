@@ -313,6 +313,39 @@ test('C6 direct missing run route renders full shell with error state (not idle)
   expect(html).toContain('Run not found.');
 });
 
+test('C7 UI host unexpected errors render HTML shell/fragment instead of JSON', async () => {
+  const prev = process.env.JEJAKEKAL_UI_FORCE_ERROR_PATH;
+  process.env.JEJAKEKAL_UI_FORCE_ERROR_PATH = '/';
+  try {
+    const full = await rawHttp({
+      port: runtime.uiPort,
+      method: 'GET',
+      path: '/'
+    });
+    expect(full.status).toBe(500);
+    expect(full.text).toContain('<!doctype html>');
+    expect(full.text).toContain('id="main"');
+    expect(full.text).toContain('error:internal_error');
+
+    const hx = await rawHttp({
+      port: runtime.uiPort,
+      method: 'GET',
+      path: '/',
+      headers: { 'HX-Request': 'true' }
+    });
+    expect(hx.status).toBe(500);
+    expect(hx.text).toContain('id="main"');
+    expect(hx.text).toContain('error:internal_error');
+    expect(hx.text.trim()).not.toBe('{"error":"internal_error"}');
+  } finally {
+    if (prev == null) {
+      delete process.env.JEJAKEKAL_UI_FORCE_ERROR_PATH;
+    } else {
+      process.env.JEJAKEKAL_UI_FORCE_ERROR_PATH = prev;
+    }
+  }
+});
+
 test('C4 artifact viewer deep-link focuses producing execution step', async ({ page, request }) => {
   const create = await request.post(`${baseUrl}/runs`, {
     data: { cmd: '/doc c4-deep-link' }

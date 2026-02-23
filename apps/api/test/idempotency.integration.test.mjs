@@ -56,3 +56,64 @@ test('concurrent callIdempotentEffect for same key executes effect exactly once'
   const countRes = await client.query('SELECT COUNT(*)::int AS c FROM side_effects WHERE effect_key = $1', ['race-key']);
   assert.equal(countRes.rows[0].c, 1);
 });
+
+test('store-raw retry after post-effect failure replays idempotent effect response', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  const prevFailpoint = process.env.JEJAKEKAL_FAIL_AFTER_STORE_RAW_EFFECT_ONCE;
+  process.env.JEJAKEKAL_FAIL_AFTER_STORE_RAW_EFFECT_ONCE = '1';
+  t.after(() => {
+    unfreeze();
+    if (prevFailpoint == null) {
+      delete process.env.JEJAKEKAL_FAIL_AFTER_STORE_RAW_EFFECT_ONCE;
+    } else {
+      process.env.JEJAKEKAL_FAIL_AFTER_STORE_RAW_EFFECT_ONCE = prevFailpoint;
+    }
+  });
+  t.after(async () => {
+    await shutdownDbosRuntime();
+  });
+
+  const workflowId = `idem-store-raw-${process.pid}-${Date.now()}`;
+  await defaultWorkflow({ client, workflowId, value: 'abc' });
+
+  const outputs = await readOperationOutputs(client, workflowId);
+  const storeRaw = outputs.find((row) => row.function_name === 'store-raw');
+  assert.ok(storeRaw);
+  assert.equal(storeRaw.output?.effect_replayed, true);
+
+  const countRes = await client.query(
+    `SELECT COUNT(*)::int AS c
+     FROM side_effects
+     WHERE effect_key LIKE $1`,
+    [`${workflowId}|store-raw|%`]
+  );
+  assert.equal(countRes.rows[0].c, 1);
+});
+
+test('workflow external write steps execute via idempotent effect-key registry', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  t.after(() => unfreeze());
+  t.after(async () => {
+    await shutdownDbosRuntime();
+  });
+
+  const workflowId = `idem-effects-${process.pid}-${Date.now()}`;
+  await defaultWorkflow({ client, workflowId, value: 'abc' });
+
+  const rows = await client.query(
+    `SELECT effect_key
+     FROM side_effects
+     WHERE effect_key LIKE $1
+     ORDER BY effect_key ASC`,
+    [`${workflowId}|%`]
+  );
+  const keys = rows.rows.map((row) => String(row.effect_key));
+  assert.ok(keys.some((key) => key.includes('|store-raw|')));
+  assert.ok(keys.some((key) => key.includes('|marker-convert|')));
+  assert.ok(keys.some((key) => key.includes('|store-parse-outputs|')));
+  assert.ok(keys.some((key) => key.includes('|emit-exec-memo|')));
+});

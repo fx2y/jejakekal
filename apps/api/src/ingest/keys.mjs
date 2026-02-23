@@ -1,12 +1,15 @@
 import { basename } from 'node:path';
+import { sha256 } from '../../../../packages/core/src/hash.mjs';
 import { assertValidRunId } from '../run-id.mjs';
 import { assertValidArtifactId } from '../artifacts/artifact-id.mjs';
 import { assertFrozenArtifactType } from '../contracts.mjs';
 
 const HEX_64_RE = /^[a-f0-9]{64}$/;
-const KEY_SEGMENT_RE = /^[a-z0-9._-]+$/;
+const KEY_SEGMENT_RE = /^[A-Za-z0-9._:-]+$/;
 const OBJECT_KEY_PREFIXES = new Set(['raw', 'parse', 'asset', 'run']);
 const PARSE_BLOB_FILENAMES = new Set(['marker.json', 'marker.md', 'chunks.json']);
+const MAX_ARTIFACT_ID_LENGTH = 128;
+const ARTIFACT_ID_HASH_LEN = 16;
 
 const INGEST_ARTIFACT_META = Object.freeze({
   raw: Object.freeze({ format: 'text/plain', title: 'Raw Source', pathKey: 'raw' }),
@@ -134,7 +137,19 @@ export function buildRunObjectKey(params) {
 export function makeRunArtifactId(runId, type) {
   const validRunId = assertValidRunId(runId, 'run_id');
   const validType = assertFrozenArtifactType(type);
-  const artifactId = `${validRunId}:${validType}`;
+  const fullArtifactId = `${validRunId}:${validType}`;
+  if (fullArtifactId.length <= MAX_ARTIFACT_ID_LENGTH) {
+    return assertValidArtifactId(fullArtifactId);
+  }
+  const runHash = sha256(validRunId).slice(0, ARTIFACT_ID_HASH_LEN);
+  const typeSuffix = `:${validType}`;
+  const hashSuffix = `.${runHash}`;
+  const runHeadBudget = Math.max(
+    1,
+    MAX_ARTIFACT_ID_LENGTH - typeSuffix.length - hashSuffix.length
+  );
+  const runHead = validRunId.slice(0, runHeadBudget);
+  const artifactId = `${runHead}${hashSuffix}${typeSuffix}`;
   return assertValidArtifactId(artifactId);
 }
 

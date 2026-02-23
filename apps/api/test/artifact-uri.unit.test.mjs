@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   makeBundleArtifactUri,
   parseArtifactUri,
+  parsePersistedArtifactUri,
   parseArtifactUriScheme,
   parseBundleArtifactUri,
   parseS3ArtifactUri,
@@ -62,5 +63,11 @@ test('artifact-uri: generic resolver handles bundle and fail-closed s3 by defaul
   );
   assert.throws(() => resolveArtifactUriToPath('/tmp/bundles', 's3://mem/raw/sha256/abcd'), {
     message: 'artifact_uri_scheme_not_supported'
+  });
+});
+
+test('artifact-uri: persisted parser reclassifies invalid URI as server invariant failure', () => {
+  assert.throws(() => parsePersistedArtifactUri('http://example.com/nope'), {
+    message: 'artifact_uri_invalid_persisted'
   });
 });

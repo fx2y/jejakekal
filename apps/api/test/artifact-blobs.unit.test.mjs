@@ -4,7 +4,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
-import { artifactBlobPath, readVerifiedArtifactBlob } from '../src/artifact-blobs.mjs';
+import {
+  artifactBlobPath,
+  assertArtifactBlobHash,
+  readVerifiedArtifactBlob
+} from '../src/artifact-blobs.mjs';
 
 test('artifact blobs: bundle uri resolves to bundle-root path', async () => {
   const root = await mkdtemp(join(tmpdir(), 'artifact-blobs-'));
@@ -36,5 +40,15 @@ test('artifact blobs: s3 uri read path requires resolver and verifies hash', asy
 
   await assert.rejects(() => readVerifiedArtifactBlob(artifact, '/tmp/bundles'), {
     message: 'artifact_uri_scheme_not_supported'
+  });
+});
+
+test('artifact blobs: missing or invalid persisted sha fails closed', () => {
+  const payload = Buffer.from('hello');
+  assert.throws(() => assertArtifactBlobHash({ sha256: '' }, payload), {
+    message: 'artifact_blob_sha256_invalid'
+  });
+  assert.throws(() => assertArtifactBlobHash({ sha256: 'not-a-sha' }, payload), {
+    message: 'artifact_blob_sha256_invalid'
   });
 });

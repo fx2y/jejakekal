@@ -1,5 +1,5 @@
 import { resolve, sep } from 'node:path';
-import { badRequest } from './request-errors.mjs';
+import { badRequest, isRequestError } from './request-errors.mjs';
 import { assertValidRunId } from './run-id.mjs';
 import { assertValidArtifactId } from './artifacts/artifact-id.mjs';
 const BUNDLE_URI_PREFIX = 'bundle://';
@@ -172,6 +172,23 @@ export function parseArtifactUri(uri) {
     scheme: 's3',
     ...parseS3ArtifactUri(uri)
   });
+}
+
+/**
+ * Strict parser for persisted `artifact.uri` rows.
+ * Persisted-row decode failures are server invariant violations, not client 4xx.
+ * @param {string} uri
+ * @returns {ParsedBundleArtifactUri | ParsedS3ArtifactUri}
+ */
+export function parsePersistedArtifactUri(uri) {
+  try {
+    return parseArtifactUri(uri);
+  } catch (error) {
+    if (isRequestError(error)) {
+      throw new Error('artifact_uri_invalid_persisted');
+    }
+    throw error;
+  }
 }
 
 /**

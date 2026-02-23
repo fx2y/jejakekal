@@ -3,7 +3,20 @@ import { getRunProjection } from './runs-projections.mjs';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { badRequest, conflict } from './request-errors.mjs';
 import { assertValidRunId } from './run-id.mjs';
-import { commandToWorkflowValue, parseIntentPayload, parseSlashCommand } from './commands/parse-command.mjs';
+import {
+  SOURCE_INTENTS,
+  commandToWorkflowValue,
+  parseIntentPayload,
+  parseSlashCommand
+} from './commands/parse-command.mjs';
+import {
+  assertSourceCompatAllowed,
+  recordSourceCompatUsage,
+  resolveCompatToday,
+  resolveSourceCompatUntil
+} from './source-compat.mjs';
+
+const SOURCE_INTENT_SET = new Set(SOURCE_INTENTS);
 
 function normalizeOptionalString(value) {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -32,11 +45,19 @@ function makeInputHash(params) {
   return sha256(
     JSON.stringify({
       intent: params.intent,
-      args: params.args,
-      sleepMs: params.sleepMs ?? null,
-      useLlm: params.useLlm ?? null
+      args: params.args
     })
   );
+}
+
+/**
+ * @param {{intent:string, cmd:string, args:Record<string, unknown>}} command
+ */
+function assertSourceIntentCommand(command) {
+  if (!SOURCE_INTENT_SET.has(command.intent)) {
+    throw badRequest('invalid_command', { cmd: command.cmd });
+  }
+  return command;
 }
 
 /**
@@ -71,14 +92,18 @@ export function normalizeRunStartPayload(payload) {
   const sleepMs = normalizeSleepMs(body.sleepMs);
   const useLlm = normalizeUseLlm(body.useLlm);
   if (typeof body.cmd === 'string') {
-    const parsed = parseSlashCommand(body.cmd);
+    const parsed = assertSourceIntentCommand(parseSlashCommand(body.cmd));
     return { ...parsed, workflowId, sleepMs, useLlm, compat: false };
   }
   if (typeof body.intent === 'string') {
-    const parsed = parseIntentPayload(body);
+    const parsed = assertSourceIntentCommand(parseIntentPayload(body));
     return { ...parsed, workflowId, sleepMs, useLlm, compat: false };
   }
   if (typeof body.source === 'string' && body.source.trim().length > 0) {
+    const today = resolveCompatToday();
+    const until = resolveSourceCompatUntil();
+    assertSourceCompatAllowed(today, until);
+    recordSourceCompatUsage({ today, until });
     return {
       cmd: '/doc',
       intent: 'doc',

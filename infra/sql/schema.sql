@@ -25,6 +25,21 @@ CREATE TABLE IF NOT EXISTS artifact (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'artifact_sha256_hex64_chk'
+      AND conrelid = 'artifact'::regclass
+  ) THEN
+    ALTER TABLE artifact
+      ADD CONSTRAINT artifact_sha256_hex64_chk
+      CHECK (sha256 ~ '^[a-f0-9]{64}$');
+  END IF;
+END
+$$;
+
 CREATE INDEX IF NOT EXISTS artifact_run_idx ON artifact (run_id);
 CREATE INDEX IF NOT EXISTS artifact_type_idx ON artifact (type, created_at DESC);
 

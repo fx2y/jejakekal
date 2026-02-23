@@ -19,6 +19,8 @@ import { createS3BlobStore, defaultS3BlobStoreConfig } from './blob/s3-store.mjs
 import { MARKER_CONFIG_PLACEHOLDER_SHA, reserveDocVersion } from './ingest/doc-repository.mjs';
 import { buildExecMemoMarkdown } from './ingest/exec-memo.mjs';
 import { listBlocksByDocVersion, populateBlockTsv, upsertBlockLedger } from './search/block-repository.mjs';
+import { callIdempotentEffect } from './effects.mjs';
+import { buildIngestEffectKey } from './ingest/effect-key.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean }) => Promise<unknown>) | undefined} */
@@ -27,6 +29,7 @@ let defaultWorkflowFn;
 let flakyRetryWorkflowFn;
 const flakyAttemptByWorkflow = new Map();
 let s3BlobStore;
+const storeRawFailpointByWorkflow = new Set();
 
 function getS3BlobStore() {
   if (!s3BlobStore) {
@@ -43,6 +46,31 @@ async function withAppClient(run) {
   } finally {
     await client.end();
   }
+}
+
+/**
+ * @template {Record<string, unknown>} T
+ * @param {string} effectKey
+ * @param {(client: import('pg').Client) => Promise<T>} effectFn
+ */
+async function runIdempotentExternalEffect(effectKey, effectFn) {
+  return withAppClient(async (client) =>
+    callIdempotentEffect(client, effectKey, () => effectFn(client))
+  );
+}
+
+/**
+ * @param {string} workflowId
+ */
+function shouldFailAfterStoreRawEffectOnce(workflowId) {
+  if (process.env.JEJAKEKAL_FAIL_AFTER_STORE_RAW_EFFECT_ONCE !== '1') {
+    return false;
+  }
+  if (storeRawFailpointByWorkflow.has(workflowId)) {
+    return false;
+  }
+  storeRawFailpointByWorkflow.add(workflowId);
+  return true;
 }
 
 /**
@@ -76,12 +104,19 @@ async function storeRawArtifactStep(input) {
   const store = getS3BlobStore();
   const payload = Buffer.from(input.source, 'utf8');
   const key = buildRawObjectKey(input.rawSha);
-  const blob = await store.putObjectChecked({
-    key,
-    payload,
-    contentType: 'text/plain; charset=utf-8'
+  const effectKey = buildIngestEffectKey({
+    workflowId: input.workflowId,
+    step: 'store-raw',
+    docId: input.docId,
+    version: input.version,
+    sha256: input.rawSha
   });
-  return withAppClient(async (client) => {
+  const effect = await runIdempotentExternalEffect(effectKey, async (client) => {
+    const blob = await store.putObjectChecked({
+      key,
+      payload,
+      contentType: 'text/plain; charset=utf-8'
+    });
     const artifactId = makeRunArtifactId(input.workflowId, 'raw');
     const prov = buildArtifactProvenance({
       runId: input.workflowId,
@@ -114,6 +149,13 @@ async function storeRawArtifactStep(input) {
       key
     };
   });
+  if (shouldFailAfterStoreRawEffectOnce(input.workflowId) && !effect.replayed) {
+    throw new Error('fail_after_store_raw_effect_once');
+  }
+  return {
+    ...effect.response,
+    effect_replayed: effect.replayed
+  };
 }
 
 /**
@@ -121,20 +163,33 @@ async function storeRawArtifactStep(input) {
  */
 async function markerConvertStep(input) {
   const ingestDir = resolveWithinRoot(input.bundlesRoot, input.workflowId, 'ingest');
-  const ingest = await ingestDocument({
+  const sourceSha = sha256(Buffer.from(input.source, 'utf8'));
+  const effectKey = buildIngestEffectKey({
+    workflowId: input.workflowId,
+    step: 'marker-convert',
     docId: input.docId,
-    source: input.source,
-    outDir: ingestDir,
-    useLlm: input.useLlm
+    version: input.version,
+    sha256: sourceSha
+  });
+  const effect = await runIdempotentExternalEffect(effectKey, async () => {
+    const ingest = await ingestDocument({
+      docId: input.docId,
+      source: input.source,
+      outDir: ingestDir,
+      useLlm: input.useLlm
+    });
+    return {
+      doc_id: input.docId,
+      ver: input.version,
+      paths: ingest.paths,
+      marker: ingest.marker,
+      assets: ingest.assets,
+      chunk_count: ingest.memo.chunkCount
+    };
   });
   return {
-    doc_id: input.docId,
-    ver: input.version,
-    paths: ingest.paths,
-    marker_json: ingest.markerJson,
-    marker: ingest.marker,
-    assets: ingest.assets,
-    chunk_count: ingest.memo.chunkCount
+    ...effect.response,
+    effect_replayed: effect.replayed
   };
 }
 
@@ -143,54 +198,60 @@ async function markerConvertStep(input) {
  */
 async function storeParseOutputsStep(input) {
   const store = getS3BlobStore();
-  const parseRows = [
-    {
-      type: 'docir',
-      format: 'application/json',
-      title: 'DocIR',
-      sourcePath: input.parsed.paths.docir,
-      key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'marker.json' })
-    },
-    {
-      type: 'chunk-index',
-      format: 'application/json',
-      title: 'Chunk Index',
-      sourcePath: input.parsed.paths.chunkIndex,
-      key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'chunks.json' })
-    },
-    {
-      type: 'marker-md',
-      format: 'text/markdown',
-      sourcePath: input.parsed.paths.markerMd,
-      key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'marker.md' })
+  const effectKey = buildIngestEffectKey({
+    workflowId: input.workflowId,
+    step: 'store-parse-outputs',
+    docId: input.docId,
+    version: input.version,
+    sha256: input.rawSha
+  });
+  const effect = await runIdempotentExternalEffect(effectKey, async (client) => {
+    const parseRows = [
+      {
+        type: 'docir',
+        format: 'application/json',
+        title: 'DocIR',
+        sourcePath: input.parsed.paths.docir,
+        key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'marker.json' })
+      },
+      {
+        type: 'chunk-index',
+        format: 'application/json',
+        title: 'Chunk Index',
+        sourcePath: input.parsed.paths.chunkIndex,
+        key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'chunks.json' })
+      },
+      {
+        type: 'marker-md',
+        format: 'text/markdown',
+        sourcePath: input.parsed.paths.markerMd,
+        key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'marker.md' })
+      }
+    ];
+    const persistedParse = [];
+    for (const row of parseRows) {
+      const payload = await readFile(row.sourcePath);
+      const artifactSha = sha256(payload);
+      const object = await store.putObjectChecked({
+        key: row.key,
+        payload,
+        contentType: row.format === 'text/markdown' ? 'text/markdown; charset=utf-8' : row.format
+      });
+      persistedParse.push({ ...row, artifactSha, uri: object.uri });
     }
-  ];
 
-  const persistedParse = [];
-  for (const row of parseRows) {
-    const payload = await readFile(row.sourcePath);
-    const artifactSha = sha256(payload);
-    const object = await store.putObjectChecked({
-      key: row.key,
-      payload,
-      contentType: row.format === 'text/markdown' ? 'text/markdown; charset=utf-8' : row.format
-    });
-    persistedParse.push({ ...row, artifactSha, uri: object.uri });
-  }
+    const persistedAssets = [];
+    for (const asset of input.parsed.assets) {
+      const key = buildAssetObjectKey(asset.sha256);
+      const payload = await readFile(asset.path);
+      await store.putObjectChecked({
+        key,
+        payload,
+        contentType: 'application/octet-stream'
+      });
+      persistedAssets.push({ key, sha256: asset.sha256, byteLength: asset.byteLength });
+    }
 
-  const persistedAssets = [];
-  for (const asset of input.parsed.assets) {
-    const key = buildAssetObjectKey(asset.sha256);
-    const payload = await readFile(asset.path);
-    await store.putObjectChecked({
-      key,
-      payload,
-      contentType: 'application/octet-stream'
-    });
-    persistedAssets.push({ key, sha256: asset.sha256, byteLength: asset.byteLength });
-  }
-
-  return withAppClient(async (client) => {
     const rawKey = buildRawObjectKey(input.rawSha);
     let inserted = 0;
     for (const row of persistedParse) {
@@ -260,6 +321,10 @@ async function storeParseOutputsStep(input) {
       marker_stderr_sha: input.parsed.marker.stderr_sha256
     };
   });
+  return {
+    ...effect.response,
+    effect_replayed: effect.replayed
+  };
 }
 
 /**
@@ -338,7 +403,14 @@ async function indexFtsStep(input) {
  * @param {{workflowId:string,docId:string,version:number,rawSha:string,markerConfigSha:string}} input
  */
 async function emitExecMemoStep(input) {
-  return withAppClient(async (client) => {
+  const effectKey = buildIngestEffectKey({
+    workflowId: input.workflowId,
+    step: 'emit-exec-memo',
+    docId: input.docId,
+    version: input.version,
+    sha256: input.rawSha
+  });
+  const effect = await runIdempotentExternalEffect(effectKey, async (client) => {
     const blocks = await listBlocksByDocVersion(client, {
       docId: input.docId,
       version: input.version
@@ -399,6 +471,10 @@ async function emitExecMemoStep(input) {
       block_count: blocks.length
     };
   });
+  return {
+    ...effect.response,
+    effect_replayed: effect.replayed
+  };
 }
 
 /**
@@ -556,6 +632,7 @@ async function defaultWorkflowImpl(input) {
     bundlesRoot,
     useLlm: input.useLlm
   });
+  const markerJson = JSON.parse(await readFile(marker.paths.docir, 'utf8'));
   const persisted = await runS3StoreParseOutputs({
     workflowId,
     rawSha: reserved.raw_sha,
@@ -569,7 +646,7 @@ async function defaultWorkflowImpl(input) {
     version: reserved.ver,
     rawSha: reserved.raw_sha,
     markerConfigSha: reserved.marker_config_sha,
-    markerJson: marker.marker_json,
+    markerJson,
     marker: {
       version: marker.marker?.version,
       stdout_sha256: marker.marker?.stdout_sha256,

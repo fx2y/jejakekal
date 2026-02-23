@@ -300,6 +300,22 @@ test('C2 payload guards: no default source fallback and invalid command typed 40
   assert.equal(unknownCommand.status, 400);
   assert.deepEqual(await unknownCommand.json(), { error: 'invalid_command', cmd: '/nope' });
 
+  const runCommand = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ cmd: '/run wf-1' })
+  });
+  assert.equal(runCommand.status, 400);
+  assert.deepEqual(await runCommand.json(), { error: 'invalid_command', cmd: '/run' });
+
+  const openIntent = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ intent: 'open', args: { artifact_id: 'wf-1:raw' } })
+  });
+  assert.equal(openIntent.status, 400);
+  assert.deepEqual(await openIntent.json(), { error: 'invalid_command', cmd: '/open' });
+
   const badSleepType = await fetch(`${baseUrl}/runs`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -744,6 +760,36 @@ test('P0 workflowId dedup rejects payload mismatch with 409', async (t) => {
   });
 });
 
+test('P2 workflowId claim hash scope is canonical intent+args (execution controls ignored)', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const workflowId = `wf-hash-scope-${process.pid}-${Date.now()}`;
+  const payloadA = { intent: 'doc', args: { source: 'same-hash' }, workflowId, sleepMs: 5, useLlm: false };
+  const payloadB = { intent: 'doc', args: { source: 'same-hash' }, workflowId, sleepMs: 50, useLlm: true };
+
+  const first = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payloadA)
+  });
+  assert.equal(first.status, 202);
+  const firstBody = await first.json();
+  const second = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payloadB)
+  });
+  assert.equal(second.status, 202);
+  const secondBody = await second.json();
+  assert.equal(secondBody.run_id, firstBody.run_id);
+});
+
 test('C2 doc identity: same raw source reuses doc_id and increments doc_ver', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
@@ -873,6 +919,57 @@ test('P1 export reads persisted artifacts even when source cannot be recovered f
   );
 });
 
+test('P0 persisted malformed artifact uri fails closed as opaque 500 across readers', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'c7-invalid-uri', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+
+  const docirRow = await client.query(
+    `SELECT id, sha256, prov
+     FROM artifact
+     WHERE run_id = $1 AND type = 'docir'
+     ORDER BY created_at ASC, id ASC
+     LIMIT 1`,
+    [started.run_id]
+  );
+  assert.equal(docirRow.rows.length, 1);
+  const badArtifactId = `${started.run_id}:docir-bad-uri`;
+  await client.query(
+    `INSERT INTO artifact (id, run_id, type, format, uri, sha256, title, status, visibility, supersedes_id, prov)
+     VALUES ($1,$2,'docir','application/json',$3,$4,'Tampered DocIR','final','user',NULL,$5::jsonb)`,
+    [badArtifactId, started.run_id, 'http://bad-uri', docirRow.rows[0].sha256, JSON.stringify(docirRow.rows[0].prov)]
+  );
+
+  const detailRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(badArtifactId)}`);
+  assert.equal(detailRes.status, 500);
+  assert.deepEqual(await detailRes.json(), { error: 'internal_error' });
+
+  const downloadRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(badArtifactId)}/download`);
+  assert.equal(downloadRes.status, 500);
+  assert.deepEqual(await downloadRes.json(), { error: 'internal_error' });
+
+  const exportRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/export`);
+  assert.equal(exportRes.status, 500);
+  assert.deepEqual(await exportRes.json(), { error: 'internal_error' });
+
+  const bundleRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/bundle`);
+  assert.equal(bundleRes.status, 500);
+  assert.deepEqual(await bundleRes.json(), { error: 'internal_error' });
+});
+
 test('C6 artifact blobs survive graceful API restart for detail/download', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
@@ -988,6 +1085,52 @@ test('C6 artifact detail fails closed for tampered JSON blob', async (t) => {
   const detailRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
   assert.equal(detailRes.status, 500);
   assert.deepEqual(await detailRes.json(), { error: 'internal_error' });
+});
+
+test('P1 source compat sunset matrix: pre-window accepts `{source}`, post-window rejects typed 400', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const prevCompatDay = process.env.JEJAKEKAL_COMPAT_TODAY;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+    if (prevCompatDay == null) {
+      delete process.env.JEJAKEKAL_COMPAT_TODAY;
+    } else {
+      process.env.JEJAKEKAL_COMPAT_TODAY = prevCompatDay;
+    }
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  process.env.JEJAKEKAL_COMPAT_TODAY = '2026-06-29';
+  const pre = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'compat-pre', sleepMs: 10 })
+  });
+  assert.equal(pre.status, 202);
+
+  process.env.JEJAKEKAL_COMPAT_TODAY = '2026-07-01';
+  const post = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'compat-post', sleepMs: 10 })
+  });
+  assert.equal(post.status, 400);
+  assert.deepEqual(await post.json(), { error: 'source_compat_expired', until: '2026-06-30' });
+});
+
+test('P1 artifact sha256 DB invariant rejects empty digest rows', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  await assert.rejects(
+    () =>
+      client.query(
+        `INSERT INTO artifact (id, run_id, type, format, uri, sha256, title, status, visibility, supersedes_id, prov)
+         VALUES ('sha-empty','sha-empty-run','memo','text/markdown','s3://mem/run/x','','Bad SHA','final','user',NULL,'{}'::jsonb)`
+      ),
+    /artifact_sha256_hex64_chk/
+  );
 });
 
 test('C6 api close keeps default bundles root; explicit cleanup remains available', async (t) => {

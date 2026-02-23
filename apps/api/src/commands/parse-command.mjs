@@ -2,8 +2,9 @@ import { assertValidArtifactId } from '../artifacts/artifact-id.mjs';
 import { badRequest } from '../request-errors.mjs';
 import { assertValidRunId } from '../run-id.mjs';
 
-const SOURCE_INTENTS = new Set(['doc', 'research', 'deck', 'sheet']);
-const COMMAND_INTENTS = new Set([...SOURCE_INTENTS, 'run', 'open']);
+export const SOURCE_INTENTS = Object.freeze(['doc', 'research', 'deck', 'sheet']);
+const SOURCE_INTENT_SET = new Set(SOURCE_INTENTS);
+const COMMAND_INTENTS = new Set([...SOURCE_INTENT_SET, 'run', 'open']);
 
 /**
  * @param {unknown} value
@@ -24,11 +25,11 @@ function normalizeArgsObject(value) {
 }
 
 /**
- * @param {string} intent
- * @param {Record<string, unknown>} args
- */
+  * @param {string} intent
+  * @param {Record<string, unknown>} args
+  */
 function normalizeIntentArgs(intent, args) {
-  if (SOURCE_INTENTS.has(intent)) {
+  if (SOURCE_INTENT_SET.has(intent)) {
     if (!requireNonEmptyString(args.source)) {
       throw badRequest('invalid_run_payload');
     }
@@ -85,7 +86,7 @@ export function parseSlashCommand(raw) {
     throw badRequest('invalid_command', { cmd });
   }
 
-  if (SOURCE_INTENTS.has(intent)) {
+  if (SOURCE_INTENT_SET.has(intent)) {
     const source = raw.trim().slice(cmd.length).trim();
     if (!source) {
       throw badRequest('invalid_run_payload');
@@ -107,7 +108,7 @@ export function parseSlashCommand(raw) {
  * @param {{intent:string, args:Record<string, unknown>}} command
  */
 export function commandToWorkflowValue(command) {
-  if (SOURCE_INTENTS.has(command.intent)) {
+  if (SOURCE_INTENT_SET.has(command.intent)) {
     return String(command.args.source);
   }
   return JSON.stringify({ intent: command.intent, args: command.args });

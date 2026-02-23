@@ -56,11 +56,34 @@ export async function startUiServer(uiPort = 4110, opts = {}) {
       res.writeHead(200, { 'content-type': contentType });
       res.end(payload);
     } catch (error) {
-      if (isRequestError(error)) {
+      const method = req.method ?? 'GET';
+      const url = req.url ?? '/';
+      const pathname = getRequestPathname(url);
+      const filters = readFilters(url);
+      const pollRoute = pathname.startsWith('/ui/runs/') && pathname.endsWith('/poll');
+      const proxyRoute = shouldProxy(method, url);
+      if (proxyRoute && isRequestError(error)) {
         sendJson(res, error.status, error.payload);
         return;
       }
-      sendJson(res, 500, { error: 'internal_error' });
+      if (proxyRoute) {
+        sendJson(res, 500, { error: 'internal_error' });
+        return;
+      }
+      const errorState = isRequestError(error)
+        ? {
+            statusCode: error.status,
+            statusText: `error:${String(error.payload.error ?? 'request_error')}`
+          }
+        : {
+            statusCode: 500,
+            statusText: 'error:internal_error'
+          };
+      if (pollRoute) {
+        sendPollErrorResponse(res, req.headers, filters, errorState);
+        return;
+      }
+      sendMainRouteErrorResponse(res, req.headers, filters, errorState);
     }
   });
 
@@ -280,6 +303,12 @@ async function handleUiRoutes(req, res, ctx) {
   if (!req.url) return false;
   const pathname = getRequestPathname(req.url);
   const filters = readFilters(req.url);
+  if (
+    typeof process.env.JEJAKEKAL_UI_FORCE_ERROR_PATH === 'string' &&
+    process.env.JEJAKEKAL_UI_FORCE_ERROR_PATH === pathname
+  ) {
+    throw new Error('ui_forced_error');
+  }
 
   if (req.method === 'GET' && pathname === '/__probe/hx-branch') {
     res.writeHead(200, { 'content-type': 'application/json' });

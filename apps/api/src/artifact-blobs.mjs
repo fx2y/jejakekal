@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
-import { parseArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
+import { parsePersistedArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
+
+const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
 
 /**
  * @param {{uri?: string | null}} artifact
@@ -10,7 +12,7 @@ export function artifactBlobPath(artifact, bundlesRoot) {
   if (typeof artifact.uri !== 'string' || artifact.uri.length === 0) {
     throw new Error('artifact_blob_missing_uri');
   }
-  const parsed = parseArtifactUri(artifact.uri);
+  const parsed = parsePersistedArtifactUri(artifact.uri);
   if (parsed.scheme === 'bundle') {
     return resolveWithinRoot(bundlesRoot, parsed.runId, parsed.relativePath);
   }
@@ -26,7 +28,7 @@ export async function readArtifactBlob(artifact, bundlesRoot, opts = {}) {
   if (typeof artifact.uri !== 'string' || artifact.uri.length === 0) {
     throw new Error('artifact_blob_missing_uri');
   }
-  const parsed = parseArtifactUri(artifact.uri);
+  const parsed = parsePersistedArtifactUri(artifact.uri);
   if (parsed.scheme === 'bundle') {
     return readFile(resolveWithinRoot(bundlesRoot, parsed.runId, parsed.relativePath));
   }
@@ -41,8 +43,8 @@ export async function readArtifactBlob(artifact, bundlesRoot, opts = {}) {
  * @param {Buffer} payload
  */
 export function assertArtifactBlobHash(artifact, payload) {
-  if (typeof artifact.sha256 !== 'string' || artifact.sha256.length === 0) {
-    return;
+  if (typeof artifact.sha256 !== 'string' || !SHA256_HEX_RE.test(artifact.sha256)) {
+    throw new Error('artifact_blob_sha256_invalid');
   }
   if (sha256(payload) !== artifact.sha256) {
     throw new Error('artifact_blob_checksum_mismatch');
