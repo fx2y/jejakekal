@@ -19,6 +19,7 @@ paths:
 - Freeze `Date.now` + `Math.random` in deterministic workflow suites; timeout math uses monotonic clock.
 - DB-reset shared lanes (workflow/replay/idempotency) are not parallel-safe unless isolation model changes.
 - Perf budgets are correctness caps; bench outputs must be stable machine-readable artifacts.
+- Benchmark fixtures/setup must be deterministic (reset scratch dirs, fixed input corpus) before timing loops.
 - Golden drift must be reviewed for structural intent; no blind re-record.
 - Truth-leak guardrails (e.g. `assistantAnswer` token lint) must target production code surfaces, not tests/docs/specs.
 
@@ -34,4 +35,5 @@ paths:
 
 - Flake: usually missing freeze or hidden nondeterministic dependency.
 - Bench check missing keys: upstream bench producer failed to emit expected schema.
+- Bench false-red on ingest p50: calibrate threshold to stable marker-subprocess baseline; avoid caps below measured steady-state median.
 - Tests pass but regression escaped: contract assertions are weak; strengthen invariants.

@@ -1,6 +1,10 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { ingestDocument } from '../packages/pipeline/src/ingest.mjs';
+
+const BENCH_RUNS = 20;
+const BENCH_OUT_DIR = '.cache/bench-ingest';
+const BENCH_SOURCE = 'a\nb\nc';
 
 function percentile(values, p) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -9,10 +13,13 @@ function percentile(values, p) {
 }
 
 async function main() {
+  await rm(BENCH_OUT_DIR, { recursive: true, force: true });
+  await mkdir(BENCH_OUT_DIR, { recursive: true });
+
   const runs = [];
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < BENCH_RUNS; i += 1) {
     const start = performance.now();
-    await ingestDocument({ docId: `bench-${i}`, source: 'a\nb\nc', outDir: '.cache/bench-ingest' });
+    await ingestDocument({ docId: `bench-${i}`, source: BENCH_SOURCE, outDir: BENCH_OUT_DIR });
     runs.push(performance.now() - start);
   }
 

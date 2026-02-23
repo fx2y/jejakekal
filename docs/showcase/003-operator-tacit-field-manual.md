@@ -294,6 +294,7 @@ Interpretation:
 
 ## 14) Fast Triage Map
 - PG weirdness: `mise run up && mise run reset`.
+- Seaweed filer port collision (`8888` busy): run with `SEAWEED_FILER_PORT=18888 BLOB_FILER_ENDPOINT=http://127.0.0.1:18888` for `mise run up|verify|ci`.
 - Stack unknown: `docker compose -f infra/compose/docker-compose.yml ps --format json | jq -s`.
 - Security probe looks false-green: rerun with `curl --path-as-is`.
 - Export/bundle failure: missing/tampered blob should be opaque `5xx` (correct).
