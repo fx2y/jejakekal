@@ -7,6 +7,12 @@ import {
   statusModel,
   uiEsc
 } from './ui-view-model.mjs';
+import { UI_ALIAS_IDS, UI_PLANE_IDS } from './contracts.mjs';
+
+const EXEC_OOB_NEEDLE = `<aside id="${UI_ALIAS_IDS.execution}"`;
+const EXEC_OOB_REPLACEMENT = `<aside id="${UI_ALIAS_IDS.execution}" hx-swap-oob="true"`;
+const ARTIFACT_OOB_NEEDLE = `<main id="${UI_ALIAS_IDS.artifacts}"`;
+const ARTIFACT_OOB_REPLACEMENT = `<main id="${UI_ALIAS_IDS.artifacts}" hx-swap-oob="true"`;
 
 /**
  * @param {{type?: string, visibility?: string, q?: string, sleepMs?: number, step?: number}} filters
@@ -36,7 +42,7 @@ function prettyDate(value) {
  * @param {string} text
  */
 export function renderConversationPane(state, text) {
-  return `<section id="conversation-plane" class="plane"><aside id="conv"><h1>Conversation</h1><form id="command-form" hx-post="/ui/commands" hx-target="#conv" hx-swap="outerHTML"><label for="cmd-input">Command</label><input id="cmd-input" name="cmd" type="text" value="/doc alpha beta gamma" required /><button type="submit">Run</button></form><p id="run-status" data-state="${uiEsc.escapeHtml(state)}">${uiEsc.escapeHtml(text)}</p></aside></section>`;
+  return `<section id="${UI_PLANE_IDS.conversation}" class="plane"><aside id="${UI_ALIAS_IDS.conversation}"><h1>Conversation</h1><form id="command-form" hx-post="/ui/commands" hx-target="#${UI_ALIAS_IDS.conversation}" hx-swap="outerHTML"><label for="cmd-input">Command</label><input id="cmd-input" name="cmd" type="text" value="/doc alpha beta gamma" required /><button type="submit">Run</button></form><p id="run-status" data-state="${uiEsc.escapeHtml(state)}">${uiEsc.escapeHtml(text)}</p></aside></section>`;
 }
 
 /**
@@ -63,19 +69,19 @@ export function renderExecutionPane(run, filters, opts = {}) {
     .join('');
   const resumeControl =
     run && isRunResumable(run)
-      ? `<form id="resume-form" action="/ui/runs/${encodeURIComponent(run.run_id)}/resume${query}" method="post" hx-post="/ui/runs/${encodeURIComponent(run.run_id)}/resume${query}" hx-target="#exec" hx-swap="outerHTML"><button type="submit">Resume</button></form>`
+      ? `<form id="resume-form" action="/ui/runs/${encodeURIComponent(run.run_id)}/resume${query}" method="post" hx-post="/ui/runs/${encodeURIComponent(run.run_id)}/resume${query}" hx-target="#${UI_ALIAS_IDS.execution}" hx-swap="outerHTML"><button type="submit">Resume</button></form>`
       : '';
   const body = run
     ? `<p><a href="/runs/${encodeURIComponent(run.run_id)}${query}" hx-push-url="true">open run</a></p>${resumeControl}<ul id="timeline">${items}</ul>`
     : `<p>${uiEsc.escapeHtml(opts.emptyText ?? 'No run selected.')}</p><ul id="timeline"></ul>`;
-  return `<section id="execution-plane" class="plane"><aside id="exec"${pollAttrs}><h2>Execution</h2><p>status=${uiEsc.escapeHtml(status.state)}</p>${body}</aside></section>`;
+  return `<section id="${UI_PLANE_IDS.execution}" class="plane"><aside id="${UI_ALIAS_IDS.execution}"${pollAttrs}><h2>Execution</h2><p>status=${uiEsc.escapeHtml(status.state)}</p>${body}</aside></section>`;
 }
 
 /**
  * @param {string} execHtml
  */
 export function withExecOob(execHtml) {
-  return execHtml.replace('<aside id="exec"', '<aside id="exec" hx-swap-oob="true"');
+  return execHtml.replace(EXEC_OOB_NEEDLE, EXEC_OOB_REPLACEMENT);
 }
 
 /**
@@ -101,7 +107,7 @@ export function renderArtifactsPane(artifacts, filters = {}, opts = {}) {
       return `<li data-artifact-id="${uiEsc.escapeHtml(artifact.id)}"><a href="/artifacts/${encodeURIComponent(artifact.id)}${query}" hx-push-url="true">${uiEsc.escapeHtml(title)}</a><span> type=${uiEsc.escapeHtml(artifact.type)} run=<a href="/runs/${encodeURIComponent(artifact.run_id)}${stepSuffix}" hx-push-url="true">${uiEsc.escapeHtml(artifact.run_id)}</a> status=${uiEsc.escapeHtml(artifact.status)} time=${uiEsc.escapeHtml(prettyDate(artifact.created_at))} cost=${uiEsc.escapeHtml(cost)} source_count=${uiEsc.escapeHtml(sourceCount)}</span></li>`;
     })
     .join('');
-  return `<section id="artifact-plane" class="plane"><main id="artifacts"><h2>Artifacts</h2>${scopeBanner}<form id="artifact-filters" hx-get="/artifacts" hx-target="#main" hx-push-url="true"><input name="type" placeholder="type" value="${uiEsc.escapeHtml(filters.type ?? '')}" /><input name="visibility" placeholder="visibility" value="${uiEsc.escapeHtml(filters.visibility ?? '')}" /><input name="q" placeholder="search title" value="${uiEsc.escapeHtml(filters.q ?? '')}" /><button type="submit">Filter</button></form><ul>${items}</ul></main></section>`;
+  return `<section id="${UI_PLANE_IDS.artifact}" class="plane"><main id="${UI_ALIAS_IDS.artifacts}"><h2>Artifacts</h2>${scopeBanner}<form id="artifact-filters" hx-get="/artifacts" hx-target="#main" hx-push-url="true"><input name="type" placeholder="type" value="${uiEsc.escapeHtml(filters.type ?? '')}" /><input name="visibility" placeholder="visibility" value="${uiEsc.escapeHtml(filters.visibility ?? '')}" /><input name="q" placeholder="search title" value="${uiEsc.escapeHtml(filters.q ?? '')}" /><button type="submit">Filter</button></form><ul>${items}</ul></main></section>`;
 }
 
 /**
@@ -109,7 +115,7 @@ export function renderArtifactsPane(artifacts, filters = {}, opts = {}) {
  */
 export function renderArtifactViewer(artifact) {
   if (!artifact || !artifact.meta) {
-    return '<section id="artifact-plane" class="plane"><main id="artifacts"><h2>Artifacts</h2><p>Artifact not found.</p></main></section>';
+    return `<section id="${UI_PLANE_IDS.artifact}" class="plane"><main id="${UI_ALIAS_IDS.artifacts}"><h2>Artifacts</h2><p>Artifact not found.</p></main></section>`;
   }
   const meta = artifact.meta;
   const runId = typeof meta.run_id === 'string' ? meta.run_id : '';
@@ -131,7 +137,7 @@ export function renderArtifactViewer(artifact) {
     contentHtml = `<pre>${uiEsc.escapeHtml(String(artifact.content ?? ''))}</pre>`;
   }
 
-  return `<section id="artifact-plane" class="plane"><main id="artifacts"><h2>Artifact ${uiEsc.escapeHtml(String(meta.id ?? ''))}</h2><p><a href="${runHref}" hx-push-url="true">open run</a> <a href="${runHref}" hx-push-url="true">open sources</a> <a href="/runs/${encodeURIComponent(runId)}/bundle.zip" hx-boost="false">Download run bundle</a></p>${contentHtml}<details><summary>provenance</summary>${renderPreJson(artifact.prov ?? {})}</details></main></section>`;
+  return `<section id="${UI_PLANE_IDS.artifact}" class="plane"><main id="${UI_ALIAS_IDS.artifacts}"><h2>Artifact ${uiEsc.escapeHtml(String(meta.id ?? ''))}</h2><p><a href="${runHref}" hx-push-url="true">open run</a> <a href="${runHref}" hx-push-url="true">open sources</a> <a href="/runs/${encodeURIComponent(runId)}/bundle.zip" hx-boost="false">Download run bundle</a></p>${contentHtml}<details><summary>provenance</summary>${renderPreJson(artifact.prov ?? {})}</details></main></section>`;
 }
 
 /**
@@ -153,12 +159,12 @@ export function renderMainFragment(panes) {
  * @param {{exec: string, artifacts: string, statusText: string, statusState: string}} panes
  */
 export function renderPollFragment(panes) {
-  return `${panes.exec}${panes.artifacts.replace('<main id="artifacts"', '<main id="artifacts" hx-swap-oob="true"')}<p id="run-status" data-state="${uiEsc.escapeHtml(panes.statusState)}" hx-swap-oob="true">${uiEsc.escapeHtml(panes.statusText)}</p>`;
+  return `${panes.exec}${panes.artifacts.replace(ARTIFACT_OOB_NEEDLE, ARTIFACT_OOB_REPLACEMENT)}<p id="run-status" data-state="${uiEsc.escapeHtml(panes.statusState)}" hx-swap-oob="true">${uiEsc.escapeHtml(panes.statusText)}</p>`;
 }
 
 /**
  * @param {{conv: string, exec: string, artifacts: string, statusText: string, statusState: string}} panes
  */
 export function renderCommandFragment(panes) {
-  return `${panes.conv}${withExecOob(panes.exec)}${panes.artifacts.replace('<main id="artifacts"', '<main id="artifacts" hx-swap-oob="true"')}<p id="run-status" data-state="${uiEsc.escapeHtml(panes.statusState)}" hx-swap-oob="true">${uiEsc.escapeHtml(panes.statusText)}</p>`;
+  return `${panes.conv}${withExecOob(panes.exec)}${panes.artifacts.replace(ARTIFACT_OOB_NEEDLE, ARTIFACT_OOB_REPLACEMENT)}<p id="run-status" data-state="${uiEsc.escapeHtml(panes.statusState)}" hx-swap-oob="true">${uiEsc.escapeHtml(panes.statusText)}</p>`;
 }

@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildChunkIndex, parseToDocIR, routeNeedsOCR } from './docir.mjs';
+import { buildChunkIndex } from './docir.mjs';
+import { runDocirParser } from './parser/docir-runner.mjs';
 import { sha256 } from '../../core/src/hash.mjs';
 
 /**
@@ -8,8 +9,7 @@ import { sha256 } from '../../core/src/hash.mjs';
  */
 export async function ingestDocument(opts) {
   await mkdir(opts.outDir, { recursive: true });
-  const doc = parseToDocIR(opts.source);
-  const ocrRequired = routeNeedsOCR(doc);
+  const { doc, ocrRequired } = runDocirParser({ source: opts.source });
   const ocrUsed = Boolean(opts.useOCR) && ocrRequired;
   const chunks = buildChunkIndex(doc);
 

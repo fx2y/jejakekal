@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
-import { resolveBundleArtifactUri } from './artifact-uri.mjs';
+import { resolveArtifactUriToPath } from './artifact-uri.mjs';
 
 /**
  * @param {{uri?: string | null}} artifact
@@ -10,7 +10,7 @@ export function artifactBlobPath(artifact, bundlesRoot) {
   if (typeof artifact.uri !== 'string' || artifact.uri.length === 0) {
     throw new Error('artifact_blob_missing_uri');
   }
-  return resolveBundleArtifactUri(bundlesRoot, artifact.uri);
+  return resolveArtifactUriToPath(bundlesRoot, artifact.uri);
 }
 
 /**

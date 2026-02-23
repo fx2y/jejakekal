@@ -3,7 +3,7 @@ import { makeManifest, writeRunBundle } from '../../../packages/core/src/run-bun
 import { readRun } from './runs-service.mjs';
 import { toBundleTimeline } from './runs-projections.mjs';
 import { unprocessable } from './request-errors.mjs';
-import { resolveBundleArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
+import { resolveArtifactUriToPath, resolveWithinRoot } from './artifact-uri.mjs';
 import { assertArtifactBlobsReadable } from './artifact-blobs.mjs';
 import { listArtifactsByRunId } from './artifacts/repository.mjs';
 
@@ -47,7 +47,7 @@ function mapPersistedArtifactsForExport(rows, bundlesRoot) {
     .map((type) => byType.get(type))
     .filter(Boolean)
     .map((row) => {
-      const path = resolveBundleArtifactUri(bundlesRoot, row.uri);
+      const path = resolveArtifactUriToPath(bundlesRoot, row.uri);
       return {
         id: row.type,
         type: row.type,

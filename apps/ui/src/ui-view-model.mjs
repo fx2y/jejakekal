@@ -1,3 +1,17 @@
+import { UI_RUN_STATUS_STATES } from './contracts.mjs';
+
+const UI_RUN_STATUS_STATE_SET = new Set(UI_RUN_STATUS_STATES);
+
+/**
+ * @param {string} state
+ */
+function assertRunStatusState(state) {
+  if (!UI_RUN_STATUS_STATE_SET.has(state)) {
+    throw new Error('ui_run_status_state_contract_violation');
+  }
+  return state;
+}
+
 /**
  * @typedef {{
  *   run_id: string,
@@ -35,13 +49,18 @@ function asRecord(value) {
  * @param {RunProjection | null | undefined} run
  */
 export function statusModel(run) {
-  if (!run) return { state: 'idle', text: 'idle' };
-  if (run.status === 'running') return { state: 'running', text: `running:${run.run_id}` };
-  if (run.status === 'done') return { state: 'done', text: `done:${run.run_id}` };
-  if (run.status === 'error') {
-    return { state: 'error', text: `error:${run.run_id}:${run.dbos_status ?? 'unknown'}` };
+  if (!run) return { state: assertRunStatusState('idle'), text: 'idle' };
+  if (run.status === 'running') {
+    return { state: assertRunStatusState('running'), text: `running:${run.run_id}` };
   }
-  return { state: 'error', text: `error:${run.run_id}:unknown_status` };
+  if (run.status === 'done') return { state: assertRunStatusState('done'), text: `done:${run.run_id}` };
+  if (run.status === 'error') {
+    return {
+      state: assertRunStatusState('error'),
+      text: `error:${run.run_id}:${run.dbos_status ?? 'unknown'}`
+    };
+  }
+  return { state: assertRunStatusState('error'), text: `error:${run.run_id}:unknown_status` };
 }
 
 /**

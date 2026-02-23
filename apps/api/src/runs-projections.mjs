@@ -1,4 +1,5 @@
 import { listArtifactsByRunId, toArtifactListItem } from './artifacts/repository.mjs';
+import { RUN_PROJECTION_FROZEN_KEYS } from './contracts.mjs';
 
 function parseDbosCell(value) {
   if (value == null) return null;
@@ -176,12 +177,20 @@ export async function getRunProjection(client, workflowId) {
             }
     });
   });
-  return {
+  const projection = {
     run_id: workflowId,
     status: mapDbosStatusToApiStatus(header.status),
     dbos_status: header.status,
     header,
-    timeline,
+    timeline
+  };
+  for (const key of RUN_PROJECTION_FROZEN_KEYS) {
+    if (!(key in projection)) {
+      throw new Error('run_projection_contract_violation');
+    }
+  }
+  return {
+    ...projection,
     artifacts: projectedArtifacts
   };
 }
