@@ -142,6 +142,14 @@ run = "bash mise-tasks/dbos/workflow-steps"
 
 [tasks."smoke:ingest"]
 run = "bash mise-tasks/smoke/ingest"
+sources = [
+  "mise-tasks/smoke/ingest",
+  "scripts/smoke-s3-head.mjs",
+  "packages/pipeline/test/smoke.integration.test.mjs",
+  "apps/api/src/blob/s3-store.mjs",
+  "infra/sql/schema.sql"
+]
+outputs = [".cache/smoke-ingest.stamp"]
 
 [tasks."ui:e2e"]
 run = "bash mise-tasks/ui/e2e"
@@ -171,7 +179,7 @@ sources = [
   "apps/api/src/**/*.mjs",
   "apps/ui/src/**/*.mjs",
   "packages/**/*.mjs",
-  "docs/showcase/002-live-runs-operator-course.md",
+  "docs/showcase/003-operator-tacit-field-manual.md",
   ".mise.toml"
 ]
 outputs = [".cache/showcase-002-signoff.json"]

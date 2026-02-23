@@ -12,11 +12,13 @@ import {
   buildAssetObjectKey,
   buildParseObjectKey,
   buildRawObjectKey,
+  buildRunObjectKey,
   makeRunArtifactId
 } from './ingest/keys.mjs';
 import { createS3BlobStore, defaultS3BlobStoreConfig } from './blob/s3-store.mjs';
 import { MARKER_CONFIG_PLACEHOLDER_SHA, reserveDocVersion } from './ingest/doc-repository.mjs';
-import { populateBlockTsv, upsertBlockLedger } from './search/block-repository.mjs';
+import { buildExecMemoMarkdown } from './ingest/exec-memo.mjs';
+import { listBlocksByDocVersion, populateBlockTsv, upsertBlockLedger } from './search/block-repository.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean }) => Promise<unknown>) | undefined} */
@@ -157,9 +159,8 @@ async function storeParseOutputsStep(input) {
       key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'chunks.json' })
     },
     {
-      type: 'memo',
+      type: 'marker-md',
       format: 'text/markdown',
-      title: 'Pipeline Memo',
       sourcePath: input.parsed.paths.markerMd,
       key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'marker.md' })
     }
@@ -193,7 +194,13 @@ async function storeParseOutputsStep(input) {
     const rawKey = buildRawObjectKey(input.rawSha);
     let inserted = 0;
     for (const row of persistedParse) {
-      const artifactId = makeRunArtifactId(input.workflowId, /** @type {'docir'|'chunk-index'|'memo'} */ (row.type));
+      if (row.type === 'marker-md') {
+        continue;
+      }
+      const artifactId = makeRunArtifactId(
+        input.workflowId,
+        /** @type {'docir'|'chunk-index'} */ (row.type)
+      );
       const prov = buildArtifactProvenance({
         runId: input.workflowId,
         artifactType: row.type,
@@ -238,13 +245,17 @@ async function storeParseOutputsStep(input) {
     const parseShaByKey = Object.fromEntries(persistedParse.map((row) => [row.key, row.artifactSha]));
     return {
       inserted,
-      total: persistedParse.length,
+      total: inserted,
       parse_keys: persistedParse.map((row) => row.key),
       parse_sha_by_key: parseShaByKey,
       asset_count: persistedAssets.length,
       asset_keys: persistedAssets.map((asset) => asset.key),
       marker_cfg_sha: input.parsed.marker.marker_cfg_sha,
       marker_version: input.parsed.marker.version,
+      marker_timing_ms:
+        typeof input.parsed.marker.timing_ms === 'number'
+          ? Math.max(0, Math.trunc(input.parsed.marker.timing_ms))
+          : null,
       marker_stdout_sha: input.parsed.marker.stdout_sha256,
       marker_stderr_sha: input.parsed.marker.stderr_sha256
     };
@@ -320,6 +331,73 @@ async function indexFtsStep(input) {
       await client.query('ROLLBACK');
       throw error;
     }
+  });
+}
+
+/**
+ * @param {{workflowId:string,docId:string,version:number,rawSha:string,markerConfigSha:string}} input
+ */
+async function emitExecMemoStep(input) {
+  return withAppClient(async (client) => {
+    const blocks = await listBlocksByDocVersion(client, {
+      docId: input.docId,
+      version: input.version
+    });
+    const markdown = buildExecMemoMarkdown({
+      docId: input.docId,
+      version: input.version,
+      rawSha: input.rawSha,
+      markerConfigSha: input.markerConfigSha,
+      blocks
+    });
+    const payload = Buffer.from(markdown, 'utf8');
+    const artifactSha = sha256(payload);
+    const key = buildRunObjectKey({
+      runId: input.workflowId,
+      relativePath: 'artifact/exec_memo.md'
+    });
+    const store = getS3BlobStore();
+    const object = await store.putObjectChecked({
+      key,
+      payload,
+      contentType: 'text/markdown; charset=utf-8'
+    });
+    const artifactId = makeRunArtifactId(input.workflowId, 'memo');
+    const prov = buildArtifactProvenance({
+      runId: input.workflowId,
+      artifactType: 'memo',
+      artifactSha256: artifactSha,
+      sourceSha256: input.rawSha,
+      producerStep: 'emit-exec-memo',
+      inputs: [
+        { kind: 'doc', id: input.docId },
+        { kind: 'doc_ver', id: `${input.docId}:${input.version}` },
+        { kind: 'raw_sha', sha256: input.rawSha }
+      ],
+      parser: {
+        marker_cfg_sha: input.markerConfigSha
+      },
+      objectKeys: {
+        raw: buildRawObjectKey(input.rawSha)
+      }
+    });
+    await insertArtifact(client, {
+      id: artifactId,
+      run_id: input.workflowId,
+      type: 'memo',
+      format: 'text/markdown',
+      uri: object.uri,
+      sha256: artifactSha,
+      title: 'Pipeline Memo',
+      prov
+    });
+    return {
+      artifact_id: artifactId,
+      uri: object.uri,
+      key,
+      sha256: artifactSha,
+      block_count: blocks.length
+    };
   });
 }
 
@@ -421,16 +499,29 @@ async function runS5IndexFts(input) {
 }
 
 /**
+ * @param {{workflowId:string,docId:string,version:number,rawSha:string,markerConfigSha:string}} input
+ */
+async function runS6EmitExecMemo(input) {
+  return DBOS.runStep(() => emitExecMemoStep(input), {
+    name: 'emit-exec-memo',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
+}
+
+/**
  * @param {string} workflowId
  */
-async function runS6ArtifactCount(workflowId) {
+async function runS7ArtifactCount(workflowId) {
   return DBOS.runStep(() => countArtifactsStep(workflowId), { name: 'artifact-count' });
 }
 
 /**
  * @param {number} artifactCount
  */
-function runS7ArtifactPostcondition(artifactCount) {
+function runS8ArtifactPostcondition(artifactCount) {
   if (artifactCount < 1) {
     throw new Error('FAILED_NO_ARTIFACT');
   }
@@ -488,14 +579,21 @@ async function defaultWorkflowImpl(input) {
     parseShaByKey: persisted.parse_sha_by_key
   });
   await runS4ToS5Pause();
-  const indexed = await runS5IndexFts({
+  await runS5IndexFts({
     workflowId,
     docId: reserved.doc_id,
     version: reserved.ver
   });
-  const artifactCount = await runS6ArtifactCount(workflowId);
-  runS7ArtifactPostcondition(artifactCount);
-  return { workflowId, reserved, marker, persisted, normalized, indexed };
+  const memo = await runS6EmitExecMemo({
+    workflowId,
+    docId: reserved.doc_id,
+    version: reserved.ver,
+    rawSha: reserved.raw_sha,
+    markerConfigSha: reserved.marker_config_sha
+  });
+  const artifactCount = await runS7ArtifactCount(workflowId);
+  runS8ArtifactPostcondition(artifactCount);
+  return { workflowId, reserved, marker, persisted, normalized, memo };
 }
 
 async function flakyRetryWorkflowImpl(input) {

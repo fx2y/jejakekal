@@ -105,3 +105,27 @@ export async function queryRankedBlocksByTsQuery(client, params) {
   }));
 }
 
+/**
+ * @param {import('pg').Client} client
+ * @param {{docId:string, version:number}} params
+ */
+export async function listBlocksByDocVersion(client, params) {
+  const result = await client.query(
+    `SELECT block_id, type, page, text, data, block_sha
+     FROM block
+     WHERE doc_id = $1 AND ver = $2
+     ORDER BY page ASC, block_id ASC`,
+    [params.docId, params.version]
+  );
+  return result.rows.map((row) => ({
+    block_id: String(row.block_id),
+    type: String(row.type),
+    page: Number(row.page),
+    text: typeof row.text === 'string' ? row.text : null,
+    data:
+      row.data && typeof row.data === 'object' && !Array.isArray(row.data)
+        ? /** @type {Record<string, unknown>} */ (row.data)
+        : {},
+    block_sha: String(row.block_sha)
+  }));
+}

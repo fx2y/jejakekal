@@ -556,6 +556,75 @@ test('C4 bundle endpoint is deterministic and preserves /export compatibility', 
   assert.equal(typeof exported.run_bundle_path, 'string');
 });
 
+test('C5 memo artifact is deterministic markdown with block refs', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'c5 memo alpha\nc5 memo beta', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+  assert.equal(run.timeline.some((step) => step.function_name === 'emit-exec-memo'), true);
+
+  const detailRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(`${started.run_id}:memo`)}`);
+  assert.equal(detailRes.status, 200);
+  const detail = await detailRes.json();
+  assert.equal(detail.meta.type, 'memo');
+  assert.equal(detail.meta.format, 'text/markdown');
+  assert.equal(typeof detail.content, 'string');
+  assert.equal(detail.content.includes('# Exec memo:'), true);
+  assert.equal(detail.content.includes('## Key excerpts (block refs)'), true);
+  assert.match(detail.content, /\[b:[a-f0-9]{24}\]/);
+});
+
+test('C5 bundle manifest adds ingest summary fields additively', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'c5 manifest additive', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+
+  const exportRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/export`);
+  assert.equal(exportRes.status, 200);
+  const exported = await exportRes.json();
+  assert.equal(typeof exported.run_bundle_path, 'string');
+  const bundle = await readBundle(exported.run_bundle_path);
+  const manifest = bundle['manifest.json'];
+  assert.equal(manifest.workflowId, started.run_id);
+  assert.equal(typeof manifest.ingest, 'object');
+  assert.equal(typeof manifest.ingest.doc_id, 'string');
+  assert.equal(typeof manifest.ingest.ver, 'number');
+  assert.equal(typeof manifest.ingest.raw_sha, 'string');
+  assert.equal(typeof manifest.ingest.keys, 'object');
+  assert.equal(typeof manifest.ingest.counts, 'object');
+  assert.equal(typeof manifest.ingest.timing_ms, 'object');
+  assert.equal(typeof manifest.ingest.stderr_ref, 'string');
+  assert.ok(Array.isArray(manifest.artifact_refs));
+  assert.ok(Array.isArray(manifest.step_summaries));
+});
+
 test('C4 fts correctness: block ledger persists and @@ ranked query is deterministic', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;

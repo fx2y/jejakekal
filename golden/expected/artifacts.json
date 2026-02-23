@@ -5,14 +5,14 @@
   },
   {
     "id": "docir",
-    "path": "golden/generated/golden-doc-a.docir.json"
+    "path": "golden/generated/marker.json"
   },
   {
     "id": "chunk-index",
-    "path": "golden/generated/golden-doc-a.chunks.json"
+    "path": "golden/generated/chunks.json"
   },
   {
     "id": "memo",
-    "path": "golden/generated/golden-doc-a.memo.json"
+    "path": "golden/generated/golden-doc-a.memo.md"
   }
 ]

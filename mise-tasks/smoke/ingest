@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+mkdir -p .cache
 code="$(curl -sS -o /dev/null -w '%{http_code}' "${BLOB_ENDPOINT:-http://127.0.0.1:9000}" || true)"
 if [[ "$code" != "200" && "$code" != "403" ]]; then
   echo "blob endpoint not ready: ${BLOB_ENDPOINT:-http://127.0.0.1:9000} (http=$code)" >&2
   exit 1
 fi
+mise x node@24.13.1 -- node scripts/smoke-s3-head.mjs
 mise run test:pipeline:smoke
+mise run psql -- -tAc "select case when to_regclass('public.block_tsv_gin') is null then 0 else 1 end" | grep -qx '1'
+date +%s > .cache/smoke-ingest.stamp

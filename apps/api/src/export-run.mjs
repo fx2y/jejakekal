@@ -6,6 +6,8 @@ import { unprocessable } from './request-errors.mjs';
 import { parseArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
 import { assertArtifactBlobsReadable } from './artifact-blobs.mjs';
 import { listArtifactsByRunId } from './artifacts/repository.mjs';
+import { assertFrozenArtifactType } from './contracts.mjs';
+import { buildIngestManifestSummary } from './export/ingest-summary.mjs';
 
 function trimPreview(source) {
   return source.replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -42,6 +44,9 @@ export function buildIngestArtifacts(ingest) {
  */
 function mapPersistedArtifactsForExport(rows, bundlesRoot) {
   const order = ['raw', 'docir', 'chunk-index', 'memo'];
+  for (const row of rows) {
+    assertFrozenArtifactType(String(row.type));
+  }
   const byType = new Map(rows.map((row) => [row.type, row]));
   return order
     .map((type) => byType.get(type))
@@ -140,7 +145,8 @@ export async function exportRunBundle(params) {
         ? run.header.created_at
         : undefined,
     artifactRefs,
-    stepSummaries
+    stepSummaries,
+    ingest: buildIngestManifestSummary(run.timeline)
   });
 
   await writeRunBundle(bundleDir, {

@@ -108,7 +108,10 @@ test('C3 dual-ID shell + command flow reaches terminal status', async ({ page })
   await expect(page.locator('#timeline li[data-function-id=\"0\"]')).toContainText('0:reserve-doc:ok');
   await expect(page.locator('#timeline li[data-function-id=\"2\"]')).toContainText('2:DBOS.sleep:ok');
   await expect(page.locator('#timeline li[data-function-id=\"4\"]')).toContainText('4:store-parse-outputs:ok');
-  await expect(page.locator('#timeline li[data-function-id=\"5\"]')).toContainText('5:artifact-count:ok');
+  await expect(page.locator('#timeline li[data-function-id=\"5\"]')).toContainText('5:normalize-docir:ok');
+  await expect(page.locator('#timeline li[data-function-id=\"6\"]')).toContainText('6:index-fts:ok');
+  await expect(page.locator('#timeline li[data-function-id=\"7\"]')).toContainText('7:emit-exec-memo:ok');
+  await expect(page.locator('#timeline li[data-function-id=\"8\"]')).toContainText('8:artifact-count:ok');
   await expect(page.locator('#artifacts li').first()).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('#artifacts')).toContainText('source_count=1');
 });
@@ -146,6 +149,39 @@ test('C3 direct artifact URL returns full page shell (non-HX)', async ({ request
   expect(html).toContain('<main id="main"');
   expect(html).toContain('id="conversation-plane"');
   expect(html).toContain('id="artifact-plane"');
+});
+
+test('C5 memo viewer renders markdown and keeps run deep-links', async ({ page, request }) => {
+  const create = await request.post(`${baseUrl}/runs`, {
+    data: { cmd: '/doc c5-memo-viewer' }
+  });
+  expect(create.status()).toBe(202);
+  const started = await create.json();
+
+  for (let i = 0; i < 120; i += 1) {
+    const runRes = await request.get(
+      `http://127.0.0.1:${runtime.apiPort}/runs/${encodeURIComponent(started.run_id)}`
+    );
+    expect(runRes.status()).toBe(200);
+    const run = await runRes.json();
+    if (run.status === 'done') break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  const memoRes = await request.get(
+    `http://127.0.0.1:${runtime.apiPort}/artifacts?type=memo&visibility=user`
+  );
+  expect(memoRes.status()).toBe(200);
+  const memos = await memoRes.json();
+  const memoId = Array.isArray(memos) ? memos.find((row) => row.run_id === started.run_id)?.id : '';
+  expect(memoId).toBeTruthy();
+
+  await page.goto(`${baseUrl}/artifacts/${encodeURIComponent(memoId)}`);
+  await expect(page.locator('#artifacts article.doc')).toBeVisible();
+  await expect(page.locator('#artifacts article.doc')).toContainText('Exec memo:');
+  await expect(page.locator('#artifacts article.doc')).toContainText('Key excerpts (block refs)');
+  await expect(page.locator('a:has-text("open run")')).toBeVisible();
+  await expect(page.locator('a:has-text("open sources")')).toBeVisible();
 });
 
 test('C3 HX polling endpoint returns OOB updates for exec+artifacts+status', async ({ request }) => {
