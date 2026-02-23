@@ -132,6 +132,7 @@ export function toArtifactListItem(artifact) {
     run_id: artifact.run_id,
     type: artifact.type,
     format: artifact.format,
+    sha256: artifact.sha256,
     title: artifact.title,
     status: artifact.status,
     visibility: artifact.visibility,

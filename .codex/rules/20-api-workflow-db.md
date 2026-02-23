@@ -17,6 +17,7 @@ paths:
 - Run projection keeps frozen keys (`run_id,status,dbos_status,header,timeline`); additive fields only.
 - Typed `4xx` for client faults; opaque `internal_error` for server faults; never leak internals.
 - External effects must go through `callIdempotentEffect(effect_key, ...)` with per-key serialization + PG advisory xact lock.
+- DBOS runtime launch/migrations must be startup-serialized across processes (PG advisory lock around `DBOS.launch`); duplicate `dbos_migrations_pkey` race is a runtime bug, not an acceptable startup flake.
 - DB/schema/projection behavior deltas must ship replay/idempotency proofs in same change.
 
 # Runtime/State Invariants
@@ -30,5 +31,6 @@ paths:
 
 - Hostile ID probe false-negative: retry with `curl --path-as-is`.
 - Duplicate effect observed: audit effect-key composition + lock path.
+- Embedded/UI API startup fails with `dbos_migrations_pkey` duplicate: check DBOS launch startup lock path (cross-process), then retry startup only after confirming no parallel embedded/API boot on same DBOS DB.
 - Timeline/order mismatch: compare API projection to DBOS `function_id` order.
 - `store-raw` S3 `InvalidAccessKeyId|AccessDenied`: bootstrap Seaweed IAM key via `weed shell ... s3.configure -access_key=any -secret_key=any -apply`, then rerun `mise run reset` before proofs.

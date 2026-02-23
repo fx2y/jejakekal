@@ -401,6 +401,8 @@ test('C2 artifact routes: list/detail/download and typed id errors', async (t) =
   assert.equal(listed.length >= 1, true);
   assert.equal(listed[0].type, 'raw');
   assert.equal(listed[0].run_id, started.run_id);
+  assert.equal(typeof listed[0].sha256, 'string');
+  assert.equal(listed[0].sha256.length, 64);
 
   const artifactId = `${started.run_id}:raw`;
   const detailRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
@@ -408,9 +410,11 @@ test('C2 artifact routes: list/detail/download and typed id errors', async (t) =
   const detail = await detailRes.json();
   assert.equal(detail.meta.id, artifactId);
   assert.equal(detail.meta.type, 'raw');
+  assert.equal(detail.meta.sha256, listed[0].sha256);
   assert.equal(typeof detail.content, 'string');
   assert.equal(detail.content.includes('artifact-route-c2'), true);
   assert.equal(detail.prov.run_id, started.run_id);
+  assert.equal(detail.prov.hash?.artifact_sha256, listed[0].sha256);
 
   const downloadRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}/download`);
   assert.equal(downloadRes.status, 200);
