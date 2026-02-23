@@ -23,7 +23,7 @@ import { callIdempotentEffect } from './effects.mjs';
 import { buildIngestEffectKey } from './ingest/effect-key.mjs';
 
 let workflowsRegistered = false;
-/** @type {((input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean }) => Promise<unknown>) | undefined} */
+/** @type {((input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, pauseAfterS4Ms?: number }) => Promise<unknown>) | undefined} */
 let defaultWorkflowFn;
 /** @type {((input: { failUntilAttempt?: number }) => Promise<unknown>) | undefined} */
 let flakyRetryWorkflowFn;
@@ -603,10 +603,23 @@ function runS8ArtifactPostcondition(artifactCount) {
   }
 }
 
-async function runS4ToS5Pause() {
-  const pauseMs = Number(process.env.JEJAKEKAL_PAUSE_AFTER_S4_MS ?? 0);
+/**
+ * @param {unknown} value
+ */
+function normalizeOptionalPauseMs(value) {
+  if (value == null || value === '') return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.max(1, Math.trunc(parsed));
+}
+
+/**
+ * @param {number | undefined} pauseAfterS4Ms
+ */
+async function runS4ToS5Pause(pauseAfterS4Ms) {
+  const pauseMs = normalizeOptionalPauseMs(pauseAfterS4Ms);
   if (!Number.isFinite(pauseMs) || pauseMs <= 0) return;
-  await DBOS.sleep(Math.max(1, Math.trunc(pauseMs)));
+  await DBOS.sleep(pauseMs);
 }
 
 async function defaultWorkflowImpl(input) {
@@ -655,7 +668,7 @@ async function defaultWorkflowImpl(input) {
     parseKeys: persisted.parse_keys,
     parseShaByKey: persisted.parse_sha_by_key
   });
-  await runS4ToS5Pause();
+  await runS4ToS5Pause(input.pauseAfterS4Ms);
   await runS5IndexFts({
     workflowId,
     docId: reserved.doc_id,
@@ -720,14 +733,16 @@ export function registerDbosWorkflows() {
 export async function startDefaultWorkflowRun(params) {
   registerDbosWorkflows();
   const workflowFn =
-    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean }) => Promise<unknown>} */ (
+    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, pauseAfterS4Ms?: number }) => Promise<unknown>} */ (
       defaultWorkflowFn
     );
+  const pauseAfterS4Ms = normalizeOptionalPauseMs(process.env.JEJAKEKAL_PAUSE_AFTER_S4_MS);
   return startWorkflowWithConflictRecovery(workflowFn, params, {
     value: params.value,
     sleepMs: params.sleepMs,
     bundlesRoot: params.bundlesRoot,
-    useLlm: params.useLlm
+    useLlm: params.useLlm,
+    pauseAfterS4Ms
   });
 }
 

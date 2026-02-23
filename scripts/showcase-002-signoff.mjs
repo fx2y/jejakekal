@@ -37,6 +37,52 @@ async function runCommand(cmd, args, opts = {}) {
   });
 }
 
+const DEFAULT_FILER_PORT = 8888;
+const ALT_FILER_PORT = 18888;
+
+async function isTcpPortOccupied(port) {
+  const result = await runCommand('ss', ['-ltn']);
+  if (!result.ok) return false;
+  const marker = `:${port}`;
+  return result.stdout
+    .split('\n')
+    .some((line) => line.includes(marker));
+}
+
+async function resolveStackEnvOverrides() {
+  const defaultEndpoint = `http://127.0.0.1:${DEFAULT_FILER_PORT}`;
+  const filerPort = process.env.SEAWEED_FILER_PORT;
+  const filerEndpoint = process.env.BLOB_FILER_ENDPOINT;
+  const hasExplicitPort = typeof filerPort === 'string' && filerPort.length > 0;
+  const hasExplicitEndpoint =
+    typeof filerEndpoint === 'string' && filerEndpoint.length > 0 && filerEndpoint !== defaultEndpoint;
+  if ((hasExplicitPort && !hasExplicitEndpoint) || (!hasExplicitPort && hasExplicitEndpoint)) {
+    throw new Error(
+      'paired filer override required: set both SEAWEED_FILER_PORT and BLOB_FILER_ENDPOINT'
+    );
+  }
+  if (hasExplicitPort && hasExplicitEndpoint) {
+    return {
+      env: {
+        SEAWEED_FILER_PORT: filerPort,
+        BLOB_FILER_ENDPOINT: filerEndpoint
+      },
+      mode: 'explicit'
+    };
+  }
+  const occupied = await isTcpPortOccupied(DEFAULT_FILER_PORT);
+  if (!occupied) {
+    return { env: {}, mode: 'default' };
+  }
+  return {
+    env: {
+      SEAWEED_FILER_PORT: String(ALT_FILER_PORT),
+      BLOB_FILER_ENDPOINT: `http://127.0.0.1:${ALT_FILER_PORT}`
+    },
+    mode: 'auto_override'
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -275,6 +321,8 @@ async function main() {
   let killApi = null;
   /** @type {import('pg').Client | null} */
   let dbClient = null;
+  /** @type {Record<string, string>} */
+  let stackEnv = {};
 
   const addStep = (step) => {
     summary.steps.push(step);
@@ -308,14 +356,20 @@ async function main() {
   }
 
   try {
+    await step('setup.filer_preflight', async () => {
+      const override = await resolveStackEnvOverrides();
+      stackEnv = override.env;
+      return { mode: override.mode, ...stackEnv };
+    });
+
     await step('setup.up', async () => {
-      const result = await runCommand('mise', ['run', 'up']);
+      const result = await runCommand('mise', ['run', 'up'], { env: stackEnv });
       assert(result.ok, `mise run up failed: ${result.stderr || result.stdout}`);
       return { command: 'mise run up', duration_ms: result.duration_ms };
     });
 
     await step('setup.reset', async () => {
-      const reset = await runCommand('mise', ['run', 'reset']);
+      const reset = await runCommand('mise', ['run', 'reset'], { env: stackEnv });
       if (reset.ok) {
         return {
           command: 'mise run reset',
@@ -328,11 +382,11 @@ async function main() {
         reset.stdout.includes('is being accessed by other users');
       assert(needsRecovery, `mise run reset failed: ${reset.stderr || reset.stdout}`);
 
-      const down = await runCommand('mise', ['run', 'down']);
+      const down = await runCommand('mise', ['run', 'down'], { env: stackEnv });
       assert(down.ok, `mise run down recovery failed: ${down.stderr || down.stdout}`);
-      const up = await runCommand('mise', ['run', 'up']);
+      const up = await runCommand('mise', ['run', 'up'], { env: stackEnv });
       assert(up.ok, `mise run up recovery failed: ${up.stderr || up.stdout}`);
-      const retry = await runCommand('mise', ['run', 'reset']);
+      const retry = await runCommand('mise', ['run', 'reset'], { env: stackEnv });
       assert(retry.ok, `mise run reset retry failed: ${retry.stderr || retry.stdout}`);
       return {
         command: 'mise run reset',
@@ -621,13 +675,21 @@ async function main() {
 
     if (process.env.SHOWCASE_ENFORCE_CI === '1') {
       await step('release.ci', async () => {
-        const result = await runCommand('mise', ['run', 'ci']);
+        const result = await runCommand('mise', ['run', '--force', 'ci'], { env: stackEnv });
         assert(result.ok, `mise run ci failed: ${result.stderr || result.stdout}`);
-        return { command: 'mise run ci', duration_ms: result.duration_ms };
+        return {
+          command: 'mise run --force ci',
+          duration_ms: result.duration_ms,
+          release_ci_executed: true
+        };
       });
     } else {
       await step('release.ci', async () => {
-        return { skipped: true, reason: 'set SHOWCASE_ENFORCE_CI=1 to enforce full release gate' };
+        return {
+          skipped: true,
+          release_ci_executed: false,
+          reason: 'set SHOWCASE_ENFORCE_CI=1 to enforce full release gate'
+        };
       });
     }
 

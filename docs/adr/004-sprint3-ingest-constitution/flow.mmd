@@ -1,0 +1,18 @@
+flowchart TD
+  A[POST /runs] --> B[normalize payload cmd|intent,args|source compat]
+  B --> C[DBOS workflow start]
+  C --> S0[reserve-doc]
+  S0 --> S1[store-raw via S3 PUT+HEAD]
+  S1 --> S2[DBOS.sleep]
+  S2 --> S3[marker-convert]
+  S3 --> S4[store-parse-outputs + assets]
+  S4 --> S5[normalize-docir]
+  S5 --> S6[index-fts]
+  S6 --> S7[emit-exec-memo]
+  S7 --> T[artifact-count >=1]
+  T -->|yes| D[(dbos.workflow_status done)]
+  T -->|no| E[FAILED_NO_ARTIFACT]
+
+  D --> R[/runs/:id projection frozen keys + additive]
+  D --> X[/artifacts* persisted-first reads]
+  D --> Y[/runs/:id/export + bundle deterministic]

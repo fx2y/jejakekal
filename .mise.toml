@@ -174,15 +174,6 @@ outputs = [".cache/bench-check.stamp"]
 [tasks."showcase:002:signoff"]
 description = "Deterministic 002 operator signoff with structured JSON evidence"
 run = "bash mise-tasks/showcase/002-signoff"
-sources = [
-  "scripts/showcase-002-signoff.mjs",
-  "apps/api/src/**/*.mjs",
-  "apps/ui/src/**/*.mjs",
-  "packages/**/*.mjs",
-  "docs/showcase/003-operator-tacit-field-manual.md",
-  ".mise.toml"
-]
-outputs = [".cache/showcase-002-signoff.json"]
 
 [tasks."wait:health"]
 description = "Poll a health endpoint until it returns HTTP 2xx"

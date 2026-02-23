@@ -1,0 +1,27 @@
+flowchart LR
+  subgraph Public
+    P1[/runs*]
+    P2[/artifacts*]
+    P3[/healthz]
+    P4[UI ids: #conversation-plane #execution-plane #artifact-plane]
+    P5[run-status FSM: idle|running|done|error]
+  end
+
+  subgraph Frozen
+    F1[Projection keys: run_id,status,dbos_status,header,timeline]
+    F2[Artifact vocab: raw,docir,chunk-index,memo]
+    F3[No /api/*]
+    F4[/runs* compat until >= 2026-06-30]
+  end
+
+  subgraph RuntimeTruth
+    T1[(dbos.workflow_status)]
+    T2[(dbos.operation_outputs)]
+    T3[(artifact/doc/doc_ver/block tables)]
+  end
+
+  P1 --> F1
+  P2 --> F2
+  P1 --> T1
+  P1 --> T2
+  P2 --> T3
