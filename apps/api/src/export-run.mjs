@@ -3,7 +3,7 @@ import { makeManifest, writeRunBundle } from '../../../packages/core/src/run-bun
 import { readRun } from './runs-service.mjs';
 import { toBundleTimeline } from './runs-projections.mjs';
 import { unprocessable } from './request-errors.mjs';
-import { resolveArtifactUriToPath, resolveWithinRoot } from './artifact-uri.mjs';
+import { parseArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
 import { assertArtifactBlobsReadable } from './artifact-blobs.mjs';
 import { listArtifactsByRunId } from './artifacts/repository.mjs';
 
@@ -47,7 +47,11 @@ function mapPersistedArtifactsForExport(rows, bundlesRoot) {
     .map((type) => byType.get(type))
     .filter(Boolean)
     .map((row) => {
-      const path = resolveArtifactUriToPath(bundlesRoot, row.uri);
+      const parsed = parseArtifactUri(row.uri);
+      const path =
+        parsed.scheme === 'bundle'
+          ? resolveWithinRoot(bundlesRoot, parsed.runId, parsed.relativePath)
+          : `s3://${parsed.bucket}/${parsed.key}`;
       return {
         id: row.type,
         type: row.type,
@@ -79,7 +83,12 @@ export function sourceFromRunTimeline(timeline) {
 }
 
 /**
- * @param {{client: import('pg').Client, bundlesRoot: string, runId: string}} params
+ * @param {{
+ *  client: import('pg').Client,
+ *  bundlesRoot: string,
+ *  runId: string,
+ *  s3Store?: {getObjectBytes: (params: {bucket?: string, key: string}) => Promise<Buffer>}
+ * }} params
  */
 export async function exportRunBundle(params) {
   const run = await readRun(params.client, params.runId);
@@ -101,7 +110,9 @@ export async function exportRunBundle(params) {
     });
     artifacts = buildIngestArtifacts(ingest);
   } else {
-    await assertArtifactBlobsReadable(artifacts, params.bundlesRoot);
+    await assertArtifactBlobsReadable(artifacts, params.bundlesRoot, {
+      s3Store: params.s3Store
+    });
   }
   if (artifacts.length > 0 && !source) {
     source = '';

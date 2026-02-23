@@ -9,6 +9,7 @@ import { handleSystemRoute } from './system-routes.mjs';
 import { isRequestError } from './request-errors.mjs';
 import { onceAsync } from '../../../packages/core/src/once-async.mjs';
 import { ensureBundlesRoot, shouldCleanupBundlesRootOnClose } from './bundles-root.mjs';
+import { createS3BlobStore, defaultS3BlobStoreConfig } from './blob/s3-store.mjs';
 
 /**
  * @param {number} port
@@ -22,6 +23,7 @@ export async function startApiServer(port = 4010, opts = {}) {
 
   const bundlesRoot = await ensureBundlesRoot(opts);
   const cleanupBundlesOnClose = shouldCleanupBundlesRootOnClose(opts);
+  const s3Store = createS3BlobStore(defaultS3BlobStoreConfig());
 
   const server = createServer(async (req, res) => {
     try {
@@ -31,8 +33,8 @@ export async function startApiServer(port = 4010, opts = {}) {
       }
 
       const handled =
-        (await handleRunsRoute(req, res, { client, bundlesRoot })) ||
-        (await handleArtifactsRoute(req, res, { client, bundlesRoot })) ||
+        (await handleRunsRoute(req, res, { client, bundlesRoot, s3Store })) ||
+        (await handleArtifactsRoute(req, res, { client, bundlesRoot, s3Store })) ||
         (await handleSystemRoute(req, res, { client }));
       if (handled) {
         return;

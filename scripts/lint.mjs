@@ -8,6 +8,9 @@ const includeExt = new Set(['.mjs', '.md', '.json', '.yaml', '.yml', '.toml', '.
 const truthLeakToken = 'assistant' + 'Answer';
 const truthLeakScanPrefixes = ['apps/', 'packages/', 'scripts/'];
 const truthLeakAllowPaths = new Set(['apps/ui/src/ui-render.mjs']);
+const seaweedFidBanRegex = /\bassign\b|\bfid\b|volume server|weed upload/i;
+const seaweedFidBanPrefixes = ['apps/', 'packages/', 'infra/', 'scripts/'];
+const seaweedFidBanAllowPaths = new Set(['scripts/lint.mjs']);
 
 function extname(path) {
   const idx = path.lastIndexOf('.');
@@ -29,6 +32,13 @@ function lintContent(path, source) {
   if (shouldCheckTruthLeak(path) && source.includes(truthLeakToken) && !truthLeakAllowPaths.has(path)) {
     issues.push(`${path}: truth-leak`);
   }
+  if (
+    shouldCheckSeaweedFidBan(path) &&
+    !seaweedFidBanAllowPaths.has(path) &&
+    seaweedFidBanRegex.test(source)
+  ) {
+    issues.push(`${path}: seaweed-fid-ban`);
+  }
   return issues;
 }
 
@@ -37,6 +47,14 @@ function shouldCheckTruthLeak(path) {
     path.endsWith('.mjs') &&
     truthLeakScanPrefixes.some((prefix) => path.startsWith(prefix)) &&
     !path.includes('/test/')
+  );
+}
+
+function shouldCheckSeaweedFidBan(path) {
+  return (
+    seaweedFidBanPrefixes.some((prefix) => path.startsWith(prefix)) &&
+    !path.includes('/test/') &&
+    !path.endsWith('.lock')
   );
 }
 

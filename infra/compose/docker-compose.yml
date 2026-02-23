@@ -17,15 +17,17 @@ services:
       - jejakekal-pg-data:/var/lib/postgresql
 
   blob:
-    image: minio/minio:latest
+    image: chrislusf/seaweedfs:latest
     container_name: jejakekal-blob
-    command: ["server", "/data", "--console-address", ":19001"]
-    environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: minio123
+    command: ["server", "-dir=/data", "-s3", "-metricsPort=9327"]
     ports:
-      - "19000:9000"
-      - "19001:19001"
+      - "${SEAWEED_MASTER_PORT:-9333}:9333"
+      - "${SEAWEED_FILER_PORT:-8888}:8888"
+      - "${SEAWEED_S3_PORT:-9000}:8333"
+      - "${SEAWEED_METRICS_PORT:-9327}:9327"
+    volumes:
+      - jejakekal-blob-data:/data
 
 volumes:
   jejakekal-pg-data:
+  jejakekal-blob-data:

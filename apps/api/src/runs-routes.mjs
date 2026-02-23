@@ -17,7 +17,11 @@ import {
 /**
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
- * @param {{client: import('pg').Client, bundlesRoot: string}} ctx
+ * @param {{
+ *  client: import('pg').Client,
+ *  bundlesRoot: string,
+ *  s3Store?: {getObjectBytes: (params: {bucket?: string, key: string}) => Promise<Buffer>}
+ * }} ctx
  */
 export async function handleRunsRoute(req, res, ctx) {
   if (!req.url) return false;
@@ -42,7 +46,8 @@ export async function handleRunsRoute(req, res, ctx) {
       const exported = await exportRunBundle({
         client: ctx.client,
         bundlesRoot: ctx.bundlesRoot,
-        runId: bundleRunId
+        runId: bundleRunId,
+        s3Store: ctx.s3Store
       });
       if (!exported) {
         sendJson(res, 404, { error: 'run_not_found', run_id: bundleRunId });
@@ -62,7 +67,8 @@ export async function handleRunsRoute(req, res, ctx) {
       const exported = await exportRunBundle({
         client: ctx.client,
         bundlesRoot: ctx.bundlesRoot,
-        runId: exportRunId
+        runId: exportRunId,
+        s3Store: ctx.s3Store
       });
       if (!exported) {
         sendJson(res, 404, { error: 'run_not_found', run_id: exportRunId });

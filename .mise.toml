@@ -12,7 +12,12 @@ PGPORT = "55440"
 PGUSER = "postgres"
 PGPASSWORD = "postgres"
 PGDATABASE = "jejakekal"
-BLOB_ENDPOINT = "http://127.0.0.1:19000"
+BLOB_ENDPOINT = "http://127.0.0.1:9000"
+BLOB_FILER_ENDPOINT = "http://127.0.0.1:8888"
+BLOB_BUCKET = "mem"
+BLOB_REGION = "us-east-1"
+BLOB_ACCESS_KEY = "any"
+BLOB_SECRET_KEY = "any"
 DBOS_SYSTEM_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:55440/jejakekal"
 
 [tasks.verify]

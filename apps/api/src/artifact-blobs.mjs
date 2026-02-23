@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
-import { resolveArtifactUriToPath } from './artifact-uri.mjs';
+import { parseArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
 
 /**
  * @param {{uri?: string | null}} artifact
@@ -10,15 +10,30 @@ export function artifactBlobPath(artifact, bundlesRoot) {
   if (typeof artifact.uri !== 'string' || artifact.uri.length === 0) {
     throw new Error('artifact_blob_missing_uri');
   }
-  return resolveArtifactUriToPath(bundlesRoot, artifact.uri);
+  const parsed = parseArtifactUri(artifact.uri);
+  if (parsed.scheme === 'bundle') {
+    return resolveWithinRoot(bundlesRoot, parsed.runId, parsed.relativePath);
+  }
+  return `s3://${parsed.bucket}/${parsed.key}`;
 }
 
 /**
  * @param {{uri?: string | null}} artifact
  * @param {string} bundlesRoot
+ * @param {{s3Store?: {getObjectBytes: (params: {bucket?: string, key: string}) => Promise<Buffer>}}} [opts]
  */
-export async function readArtifactBlob(artifact, bundlesRoot) {
-  return readFile(artifactBlobPath(artifact, bundlesRoot));
+export async function readArtifactBlob(artifact, bundlesRoot, opts = {}) {
+  if (typeof artifact.uri !== 'string' || artifact.uri.length === 0) {
+    throw new Error('artifact_blob_missing_uri');
+  }
+  const parsed = parseArtifactUri(artifact.uri);
+  if (parsed.scheme === 'bundle') {
+    return readFile(resolveWithinRoot(bundlesRoot, parsed.runId, parsed.relativePath));
+  }
+  if (!opts.s3Store || typeof opts.s3Store.getObjectBytes !== 'function') {
+    throw new Error('artifact_uri_scheme_not_supported');
+  }
+  return opts.s3Store.getObjectBytes({ bucket: parsed.bucket, key: parsed.key });
 }
 
 /**
@@ -37,9 +52,10 @@ export function assertArtifactBlobHash(artifact, payload) {
 /**
  * @param {{uri?: string | null, sha256?: string | null}} artifact
  * @param {string} bundlesRoot
+ * @param {{s3Store?: {getObjectBytes: (params: {bucket?: string, key: string}) => Promise<Buffer>}}} [opts]
  */
-export async function readVerifiedArtifactBlob(artifact, bundlesRoot) {
-  const payload = await readArtifactBlob(artifact, bundlesRoot);
+export async function readVerifiedArtifactBlob(artifact, bundlesRoot, opts = {}) {
+  const payload = await readArtifactBlob(artifact, bundlesRoot, opts);
   assertArtifactBlobHash(artifact, payload);
   return payload;
 }
@@ -61,9 +77,10 @@ export function decodeArtifactContentStrict(format, payload) {
 /**
  * @param {Array<{uri?: string | null, sha256?: string | null}>} artifacts
  * @param {string} bundlesRoot
+ * @param {{s3Store?: {getObjectBytes: (params: {bucket?: string, key: string}) => Promise<Buffer>}}} [opts]
  */
-export async function assertArtifactBlobsReadable(artifacts, bundlesRoot) {
+export async function assertArtifactBlobsReadable(artifacts, bundlesRoot, opts = {}) {
   for (const artifact of artifacts) {
-    await readVerifiedArtifactBlob(artifact, bundlesRoot);
+    await readVerifiedArtifactBlob(artifact, bundlesRoot, opts);
   }
 }

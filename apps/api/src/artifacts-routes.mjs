@@ -40,7 +40,7 @@ function readOptionalQueryValue(params, key) {
 /**
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
- * @param {{client: import('pg').Client, bundlesRoot: string}} ctx
+ * @param {{client: import('pg').Client, bundlesRoot: string, s3Store?: {getObjectBytes: (params: {bucket?: string, key: string}) => Promise<Buffer>}}} ctx
  */
 export async function handleArtifactsRoute(req, res, ctx) {
   if (!req.url) return false;
@@ -73,7 +73,9 @@ export async function handleArtifactsRoute(req, res, ctx) {
         return true;
       }
       const filePath = artifactBlobPath(artifact, ctx.bundlesRoot);
-      const payload = await readVerifiedArtifactBlob(artifact, ctx.bundlesRoot);
+      const payload = await readVerifiedArtifactBlob(artifact, ctx.bundlesRoot, {
+        s3Store: ctx.s3Store
+      });
       res.writeHead(200, {
         'content-type': contentTypeForFormat(artifact.format),
         'content-disposition': `attachment; filename="${basename(filePath)}"`
@@ -90,7 +92,9 @@ export async function handleArtifactsRoute(req, res, ctx) {
         return true;
       }
       const enriched = await withProducerFunctionId(ctx.client, new Map(), artifact);
-      const payload = await readVerifiedArtifactBlob(artifact, ctx.bundlesRoot);
+      const payload = await readVerifiedArtifactBlob(artifact, ctx.bundlesRoot, {
+        s3Store: ctx.s3Store
+      });
       sendJson(res, 200, {
         meta: toArtifactListItem(enriched),
         content: decodeArtifactContentStrict(artifact.format, payload),

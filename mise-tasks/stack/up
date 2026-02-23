@@ -1,12 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 docker compose -f infra/compose/docker-compose.yml up -d
+healthy=0
+master_port="${SEAWEED_MASTER_PORT:-9333}"
+filer_port="${SEAWEED_FILER_PORT:-8888}"
+s3_port="${SEAWEED_S3_PORT:-9000}"
 for _ in $(seq 1 60); do
   if docker compose -f infra/compose/docker-compose.yml ps --format json \
     | jq -s -e 'length > 0 and all(.[]; .State == "running" and (.Health == "" or .Health == "healthy"))' >/dev/null 2>&1; then
+    healthy=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$healthy" != "1" ]]; then
+  echo "stack did not become healthy in time" >&2
+  exit 1
+fi
+
+mise run wait:health -- "http://127.0.0.1:${master_port}/cluster/status" 20000 200
+mise run wait:health -- "http://127.0.0.1:${filer_port}/" 20000 200
+
+for _ in $(seq 1 60); do
+  code="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${s3_port}" || true)"
+  if [[ "$code" == "200" || "$code" == "403" ]]; then
     exit 0
   fi
   sleep 1
 done
-echo "stack did not become healthy in time" >&2
+
+echo "seaweed s3 endpoint did not become ready in time" >&2
 exit 1
