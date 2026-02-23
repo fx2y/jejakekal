@@ -36,6 +36,44 @@ CREATE TABLE IF NOT EXISTS chat_event (
   run_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS doc (
+  doc_id TEXT PRIMARY KEY,
+  raw_sha TEXT NOT NULL UNIQUE,
+  filename TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  byte_len BIGINT NOT NULL CHECK (byte_len >= 0),
+  latest_ver INTEGER NOT NULL DEFAULT 0 CHECK (latest_ver >= 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS doc_ver (
+  doc_id TEXT NOT NULL REFERENCES doc (doc_id) ON DELETE CASCADE,
+  ver INTEGER NOT NULL CHECK (ver >= 1),
+  raw_sha TEXT NOT NULL,
+  marker_config_sha TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (doc_id, ver)
+);
+
+CREATE TABLE IF NOT EXISTS block (
+  doc_id TEXT NOT NULL,
+  ver INTEGER NOT NULL,
+  block_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  page INTEGER NOT NULL CHECK (page >= 1),
+  bbox JSONB,
+  text TEXT,
+  data JSONB,
+  block_sha TEXT NOT NULL,
+  tsv TSVECTOR,
+  prov JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (doc_id, ver, block_id),
+  FOREIGN KEY (doc_id, ver) REFERENCES doc_ver (doc_id, ver) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS block_tsv_gin ON block USING GIN (tsv);
+
 CREATE OR REPLACE FUNCTION deny_artifact_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'artifact_immutable';

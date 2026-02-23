@@ -1,13 +1,16 @@
 import { DBOS, DBOSWorkflowConflictError } from '@dbos-inc/dbos-sdk';
 import { ingestDocument } from '../../../packages/pipeline/src/ingest.mjs';
+import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { makeClient } from './db.mjs';
 import { callIdempotentEffect } from './effects.mjs';
 import { resolveWithinRoot } from './artifact-uri.mjs';
 import { defaultBundlesRootPath } from './bundles-root.mjs';
-import { buildArtifactProvenance, hashSource } from './artifacts/provenance.mjs';
+import { buildArtifactProvenance } from './artifacts/provenance.mjs';
 import { countArtifactsByRunId, insertArtifact } from './artifacts/repository.mjs';
-import { buildPersistedIngestArtifactPlan } from './ingest/keys.mjs';
+import { buildPersistedIngestArtifactPlan, buildRawObjectKey, makeRunArtifactId } from './ingest/keys.mjs';
 import { materializeBundleArtifact } from './blob/bundle-store.mjs';
+import { createS3BlobStore, defaultS3BlobStoreConfig } from './blob/s3-store.mjs';
+import { MARKER_CONFIG_PLACEHOLDER_SHA, reserveDocVersion } from './ingest/doc-repository.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number }) => Promise<unknown>) | undefined} */
@@ -15,6 +18,14 @@ let defaultWorkflowFn;
 /** @type {((input: { failUntilAttempt?: number }) => Promise<unknown>) | undefined} */
 let flakyRetryWorkflowFn;
 const flakyAttemptByWorkflow = new Map();
+let s3BlobStore;
+
+function getS3BlobStore() {
+  if (!s3BlobStore) {
+    s3BlobStore = createS3BlobStore(defaultS3BlobStoreConfig());
+  }
+  return s3BlobStore;
+}
 
 async function withAppClient(run) {
   const client = makeClient();
@@ -26,8 +37,28 @@ async function withAppClient(run) {
   }
 }
 
-async function prepareStep(value) {
-  return { source: value, prepared: value.toUpperCase() };
+/**
+ * @param {{source: string}} input
+ */
+async function reserveDocStep(input) {
+  return withAppClient(async (client) => {
+    const payload = Buffer.from(input.source, 'utf8');
+    const rawSha = sha256(payload);
+    const reserved = await reserveDocVersion(client, {
+      rawSha,
+      filename: 'inline.txt',
+      mime: 'text/plain',
+      byteLength: payload.length,
+      markerConfigSha: MARKER_CONFIG_PLACEHOLDER_SHA
+    });
+    return {
+      source: input.source,
+      raw_sha: reserved.rawSha,
+      doc_id: reserved.docId,
+      ver: reserved.version,
+      marker_config_sha: reserved.markerConfigSha
+    };
+  });
 }
 
 async function sideEffectStep() {
@@ -46,7 +77,7 @@ async function finalizeStep() {
 }
 
 /**
- * @param {{workflowId:string, source:string, bundlesRoot:string}} input
+ * @param {{workflowId:string, source:string, bundlesRoot:string, rawSha:string}} input
  */
 async function persistArtifactsStep(input) {
   const ingestDir = resolveWithinRoot(input.bundlesRoot, input.workflowId, 'ingest');
@@ -55,11 +86,11 @@ async function persistArtifactsStep(input) {
     source: input.source,
     outDir: ingestDir
   });
-  const sourceSha256 = hashSource(input.source);
+  const sourceSha256 = input.rawSha;
   const plan = buildPersistedIngestArtifactPlan({
     workflowId: input.workflowId,
     paths: ingest.paths
-  });
+  }).filter((row) => row.type !== 'raw');
 
   return withAppClient(async (client) => {
     let inserted = 0;
@@ -93,6 +124,50 @@ async function persistArtifactsStep(input) {
 }
 
 /**
+ * @param {{workflowId: string, source: string, rawSha: string, docId: string, version: number}} input
+ */
+async function storeRawArtifactStep(input) {
+  const store = getS3BlobStore();
+  const payload = Buffer.from(input.source, 'utf8');
+  const key = buildRawObjectKey(input.rawSha);
+  const blob = await store.putObjectChecked({
+    key,
+    payload,
+    contentType: 'text/plain; charset=utf-8'
+  });
+  return withAppClient(async (client) => {
+    const artifactId = makeRunArtifactId(input.workflowId, 'raw');
+    const prov = buildArtifactProvenance({
+      runId: input.workflowId,
+      artifactType: 'raw',
+      artifactSha256: input.rawSha,
+      sourceSha256: input.rawSha,
+      producerStep: 'store-raw',
+      inputs: [
+        { kind: 'doc', id: input.docId },
+        { kind: 'doc_ver', id: `${input.docId}:${input.version}` },
+        { kind: 'raw_sha', sha256: input.rawSha }
+      ]
+    });
+    await insertArtifact(client, {
+      id: artifactId,
+      run_id: input.workflowId,
+      type: 'raw',
+      format: 'text/plain',
+      uri: blob.uri,
+      sha256: input.rawSha,
+      title: 'Raw Source',
+      prov
+    });
+    return {
+      artifact_id: artifactId,
+      uri: blob.uri,
+      key
+    };
+  });
+}
+
+/**
  * @param {string} workflowId
  */
 async function countArtifactsStep(workflowId) {
@@ -114,7 +189,7 @@ async function flakyStep(failUntilAttempt) {
  * @param {{value: string}} input
  */
 async function runS0Prepare(input) {
-  return DBOS.runStep(async () => prepareStep(input.value), { name: 'prepare' });
+  return DBOS.runStep(() => reserveDocStep({ source: input.value }), { name: 'reserve-doc' });
 }
 
 /**
@@ -133,10 +208,24 @@ async function runS3Finalize() {
 }
 
 /**
+ * @param {{workflowId: string, source: string, rawSha: string, docId: string, version: number}} input
+ */
+async function runS2StoreRaw(input) {
+  return DBOS.runStep(() => storeRawArtifactStep(input), {
+    name: 'store-raw',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
+}
+
+/**
  * @param {{bundlesRoot?: string, value: string}} input
+ * @param {string} rawSha
  * @param {string} workflowId
  */
-async function runS4PersistArtifacts(input, workflowId) {
+async function runS4PersistArtifacts(input, rawSha, workflowId) {
   const bundlesRoot =
     typeof input.bundlesRoot === 'string' && input.bundlesRoot.length > 0
       ? input.bundlesRoot
@@ -146,7 +235,8 @@ async function runS4PersistArtifacts(input, workflowId) {
       persistArtifactsStep({
         workflowId,
         source: input.value,
-        bundlesRoot
+        bundlesRoot,
+        rawSha
       }),
     {
       name: 'persist-artifacts',
@@ -175,15 +265,22 @@ function runS6ArtifactPostcondition(artifactCount) {
 }
 
 async function defaultWorkflowImpl(input) {
-  await runS0Prepare(input);
+  const reserved = await runS0Prepare(input);
+  const workflowId = DBOS.workflowID ?? 'unknown-workflow';
+  await runS2StoreRaw({
+    workflowId,
+    source: input.value,
+    rawSha: reserved.raw_sha,
+    docId: reserved.doc_id,
+    version: reserved.ver
+  });
   await runS1Sleep(input);
   const sideEffect = await runS2SideEffect();
   const finalize = await runS3Finalize();
-  const workflowId = DBOS.workflowID ?? 'unknown-workflow';
-  const persisted = await runS4PersistArtifacts(input, workflowId);
+  const persisted = await runS4PersistArtifacts(input, reserved.raw_sha, workflowId);
   const artifactCount = await runS5ArtifactCount(workflowId);
   runS6ArtifactPostcondition(artifactCount);
-  return { workflowId, sideEffect, finalize, persisted };
+  return { workflowId, reserved, sideEffect, finalize, persisted };
 }
 
 async function flakyRetryWorkflowImpl(input) {

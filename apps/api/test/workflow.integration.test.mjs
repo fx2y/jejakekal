@@ -81,7 +81,8 @@ test('C1 smoke: DBOS run writes dbos.workflow_status + dbos.operation_outputs', 
   const timeline = await defaultWorkflow({ client, workflowId, value: 'abc' });
 
   assert.ok(timeline.length >= 3);
-  assert.ok(timeline.some((row) => row.step === 'prepare'));
+  assert.ok(timeline.some((row) => row.step === 'reserve-doc'));
+  assert.ok(timeline.some((row) => row.step === 'store-raw'));
   assert.ok(timeline.some((row) => row.step === 'side-effect'));
   assert.ok(timeline.some((row) => row.step === 'finalize'));
   assert.ok(timeline.some((row) => row.step === 'persist-artifacts'));
@@ -238,7 +239,8 @@ test('C2 canonical /runs is durable-start async and GET /runs/:id projects order
     run.timeline.map((row) => row.function_id),
     [...run.timeline.map((row) => row.function_id)].sort((a, b) => a - b)
   );
-  assert.ok(run.timeline.some((row) => row.function_name === 'prepare'));
+  assert.ok(run.timeline.some((row) => row.function_name === 'reserve-doc'));
+  assert.ok(run.timeline.some((row) => row.function_name === 'store-raw'));
   assert.ok(run.timeline.some((row) => row.function_name === 'side-effect'));
   assert.ok(run.timeline.some((row) => row.function_name === 'finalize'));
   assert.ok(run.timeline.every((row) => typeof row.attempt === 'number'));
@@ -246,6 +248,30 @@ test('C2 canonical /runs is durable-start async and GET /runs/:id projects order
   assert.ok(Array.isArray(run.artifacts));
   assert.equal(run.artifacts.length, 4);
   assert.equal(typeof run.artifacts[0].prov, 'object');
+
+  const rawArtifactRow = await client.query(
+    `SELECT id, type, uri, sha256
+     FROM artifact
+     WHERE run_id = $1 AND type = 'raw'`,
+    [started.run_id]
+  );
+  assert.equal(rawArtifactRow.rows.length, 1);
+  assert.equal(rawArtifactRow.rows[0].id, `${started.run_id}:raw`);
+  assert.equal(typeof rawArtifactRow.rows[0].sha256, 'string');
+  assert.equal(rawArtifactRow.rows[0].uri.startsWith('s3://mem/raw/sha256/'), true);
+
+  const docRows = await client.query(
+    `SELECT d.doc_id, d.raw_sha, d.latest_ver, dv.ver
+     FROM doc d
+     JOIN doc_ver dv ON dv.doc_id = d.doc_id
+     WHERE d.raw_sha = $1
+     ORDER BY dv.ver ASC`,
+    [rawArtifactRow.rows[0].sha256]
+  );
+  assert.equal(docRows.rows.length, 1);
+  assert.equal(docRows.rows[0].latest_ver, 1);
+  assert.equal(docRows.rows[0].ver, 1);
+  assert.equal(typeof docRows.rows[0].doc_id, 'string');
 });
 
 test('C2 payload guards: no default source fallback and invalid command typed 400', async (t) => {
@@ -604,6 +630,50 @@ test('P0 workflowId dedup rejects payload mismatch with 409', async (t) => {
   });
 });
 
+test('C2 doc identity: same raw source reuses doc_id and increments doc_ver', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const source = 'same-doc-c2';
+  const first = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source, sleepMs: 10 })
+  });
+  assert.equal(first.status, 202);
+  const firstRun = await first.json();
+  const second = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source, sleepMs: 10 })
+  });
+  assert.equal(second.status, 202);
+  const secondRun = await second.json();
+  assert.notEqual(firstRun.run_id, secondRun.run_id);
+
+  const runA = await waitForRunTerminal(baseUrl, firstRun.run_id);
+  const runB = await waitForRunTerminal(baseUrl, secondRun.run_id);
+  assert.equal(runA?.status, 'done');
+  assert.equal(runB?.status, 'done');
+
+  const rows = await client.query(
+    `SELECT d.doc_id, d.latest_ver, dv.ver
+     FROM doc d
+     JOIN doc_ver dv ON dv.doc_id = d.doc_id
+     ORDER BY dv.ver ASC`
+  );
+  assert.equal(rows.rows.length, 2);
+  assert.equal(rows.rows[0].doc_id, rows.rows[1].doc_id);
+  assert.equal(rows.rows[0].ver, 1);
+  assert.equal(rows.rows[1].ver, 2);
+  assert.equal(rows.rows[1].latest_ver, 2);
+});
+
 test('C6 chat ledger dedup: idempotent retry with same workflowId keeps one chat_event row', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
@@ -675,9 +745,9 @@ test('P1 export reads persisted artifacts even when source cannot be recovered f
   await client.query(
     `UPDATE dbos.operation_outputs
      SET output = $2
-     WHERE workflow_uuid = $1 AND function_name = 'prepare'`,
-    [started.run_id, JSON.stringify({ json: { prepared: 'MISSING_SOURCE' } })]
-  );
+     WHERE workflow_uuid = $1 AND function_name = 'reserve-doc'`,
+     [started.run_id, JSON.stringify({ json: { prepared: 'MISSING_SOURCE' } })]
+   );
 
   const exportRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/export`);
   assert.equal(exportRes.status, 200);
@@ -750,7 +820,7 @@ test('C6 export and bundle fail closed when persisted artifact blob is missing',
   const run = await waitForRunTerminal(baseUrl, started.run_id);
   assert.equal(run?.status, 'done');
 
-  const rowRes = await client.query(`SELECT id, uri FROM artifact WHERE run_id = $1 AND type = 'raw'`, [started.run_id]);
+  const rowRes = await client.query(`SELECT id, uri FROM artifact WHERE run_id = $1 AND type = 'docir'`, [started.run_id]);
   assert.equal(rowRes.rows.length, 1);
   const artifactId = rowRes.rows[0].id;
   const filePath = resolveBundleArtifactUri(api.bundlesRoot, rowRes.rows[0].uri);

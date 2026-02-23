@@ -31,3 +31,4 @@ paths:
 - Hostile ID probe false-negative: retry with `curl --path-as-is`.
 - Duplicate effect observed: audit effect-key composition + lock path.
 - Timeline/order mismatch: compare API projection to DBOS `function_id` order.
+- `store-raw` S3 `InvalidAccessKeyId|AccessDenied`: bootstrap Seaweed IAM key via `weed shell ... s3.configure -access_key=any -secret_key=any -apply`, then rerun `mise run reset` before proofs.

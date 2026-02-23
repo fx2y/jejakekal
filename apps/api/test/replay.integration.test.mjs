@@ -91,9 +91,9 @@ test('C4 kill9: SIGKILL during DBOS.sleep resumes from last completed step', asy
     async () => {
       const run = await api.readRun(runId);
       if (!run) return false;
-      return run.timeline.some((step) => step.function_name === 'prepare');
+      return run.timeline.some((step) => step.function_name === 'reserve-doc');
     },
-    { timeoutMs: 10_000, intervalMs: 50, label: `prepare row for ${runId}` }
+    { timeoutMs: 10_000, intervalMs: 50, label: `reserve-doc row for ${runId}` }
   );
 
   await api.kill('SIGKILL');
@@ -107,7 +107,7 @@ test('C4 kill9: SIGKILL during DBOS.sleep resumes from last completed step', asy
   const done = await api.waitForRunTerminal(runId, 20_000);
   assert.equal(done?.status, 'done');
   const steps = done.timeline;
-  assert.equal(steps.filter((step) => step.function_name === 'prepare').length, 1);
+  assert.equal(steps.filter((step) => step.function_name === 'reserve-doc').length, 1);
   assert.equal(steps.filter((step) => step.function_name === 'DBOS.sleep').length, 1);
 });
 
@@ -286,7 +286,7 @@ test('C4 resume endpoint resumes CANCELLED run without duplicating completed ste
   const done = await api.waitForRunTerminal(runId, 20_000);
   assert.equal(done?.status, 'done');
   assert.equal(done?.dbos_status, 'SUCCESS');
-  assert.equal(done.timeline.filter((step) => step.function_name === 'prepare').length, 1);
+  assert.equal(done.timeline.filter((step) => step.function_name === 'reserve-doc').length, 1);
 });
 
 test('C4 determinism guard: default workflow body keeps nondeterminism out of workflow function', async () => {

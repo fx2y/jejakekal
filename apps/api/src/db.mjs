@@ -30,7 +30,9 @@ export async function applySchema(client) {
  */
 export async function resetAppTables(client) {
   await applySchema(client);
-  await client.query('TRUNCATE side_effects, workflow_input_claims, artifact, chat_event RESTART IDENTITY CASCADE');
+  await client.query(
+    'TRUNCATE side_effects, workflow_input_claims, artifact, chat_event, block, doc_ver, doc RESTART IDENTITY CASCADE'
+  );
 }
 
 /**
