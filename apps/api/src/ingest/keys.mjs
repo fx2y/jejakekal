@@ -16,7 +16,7 @@ const INGEST_ARTIFACT_META = Object.freeze({
     title: 'Chunk Index',
     pathKey: 'chunkIndex'
   }),
-  memo: Object.freeze({ format: 'application/json', title: 'Pipeline Memo', pathKey: 'memo' })
+  memo: Object.freeze({ format: 'text/markdown', title: 'Pipeline Memo', pathKey: 'memo' })
 });
 
 /**

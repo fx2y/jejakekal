@@ -1,19 +1,23 @@
+import { readFile } from 'node:fs/promises';
 import { DBOS, DBOSWorkflowConflictError } from '@dbos-inc/dbos-sdk';
 import { ingestDocument } from '../../../packages/pipeline/src/ingest.mjs';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { makeClient } from './db.mjs';
-import { callIdempotentEffect } from './effects.mjs';
 import { resolveWithinRoot } from './artifact-uri.mjs';
 import { defaultBundlesRootPath } from './bundles-root.mjs';
 import { buildArtifactProvenance } from './artifacts/provenance.mjs';
 import { countArtifactsByRunId, insertArtifact } from './artifacts/repository.mjs';
-import { buildPersistedIngestArtifactPlan, buildRawObjectKey, makeRunArtifactId } from './ingest/keys.mjs';
-import { materializeBundleArtifact } from './blob/bundle-store.mjs';
+import {
+  buildAssetObjectKey,
+  buildParseObjectKey,
+  buildRawObjectKey,
+  makeRunArtifactId
+} from './ingest/keys.mjs';
 import { createS3BlobStore, defaultS3BlobStoreConfig } from './blob/s3-store.mjs';
 import { MARKER_CONFIG_PLACEHOLDER_SHA, reserveDocVersion } from './ingest/doc-repository.mjs';
 
 let workflowsRegistered = false;
-/** @type {((input: { value: string, sleepMs?: number }) => Promise<unknown>) | undefined} */
+/** @type {((input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean }) => Promise<unknown>) | undefined} */
 let defaultWorkflowFn;
 /** @type {((input: { failUntilAttempt?: number }) => Promise<unknown>) | undefined} */
 let flakyRetryWorkflowFn;
@@ -61,68 +65,6 @@ async function reserveDocStep(input) {
   });
 }
 
-async function sideEffectStep() {
-  return withAppClient(async (client) => {
-    const workflowId = DBOS.workflowID ?? 'unknown-workflow';
-    const result = await callIdempotentEffect(client, `${workflowId}:side-effect:email`, async () => ({
-      sent: true,
-      timestamp: Date.now()
-    }));
-    return { sent: result.response.sent, replayed: result.replayed };
-  });
-}
-
-async function finalizeStep() {
-  return { ok: true };
-}
-
-/**
- * @param {{workflowId:string, source:string, bundlesRoot:string, rawSha:string}} input
- */
-async function persistArtifactsStep(input) {
-  const ingestDir = resolveWithinRoot(input.bundlesRoot, input.workflowId, 'ingest');
-  const ingest = await ingestDocument({
-    docId: input.workflowId,
-    source: input.source,
-    outDir: ingestDir
-  });
-  const sourceSha256 = input.rawSha;
-  const plan = buildPersistedIngestArtifactPlan({
-    workflowId: input.workflowId,
-    paths: ingest.paths
-  }).filter((row) => row.type !== 'raw');
-
-  return withAppClient(async (client) => {
-    let inserted = 0;
-    for (const row of plan) {
-      const blob = await materializeBundleArtifact({
-        runId: input.workflowId,
-        artifactId: row.artifactId,
-        relativePath: row.relativePath,
-        sourcePath: row.sourcePath
-      });
-      const prov = buildArtifactProvenance({
-        runId: input.workflowId,
-        artifactType: row.type,
-        artifactSha256: blob.sha256,
-        sourceSha256
-      });
-      const persisted = await insertArtifact(client, {
-        id: row.artifactId,
-        run_id: input.workflowId,
-        type: row.type,
-        format: row.format,
-        uri: blob.uri,
-        sha256: blob.sha256,
-        title: row.title,
-        prov
-      });
-      if (persisted) inserted += 1;
-    }
-    return { inserted, total: plan.length };
-  });
-}
-
 /**
  * @param {{workflowId: string, source: string, rawSha: string, docId: string, version: number}} input
  */
@@ -147,7 +89,10 @@ async function storeRawArtifactStep(input) {
         { kind: 'doc', id: input.docId },
         { kind: 'doc_ver', id: `${input.docId}:${input.version}` },
         { kind: 'raw_sha', sha256: input.rawSha }
-      ]
+      ],
+      objectKeys: {
+        raw: key
+      }
     });
     await insertArtifact(client, {
       id: artifactId,
@@ -163,6 +108,140 @@ async function storeRawArtifactStep(input) {
       artifact_id: artifactId,
       uri: blob.uri,
       key
+    };
+  });
+}
+
+/**
+ * @param {{workflowId:string, source:string, bundlesRoot:string, docId:string, version:number, useLlm?:boolean}} input
+ */
+async function markerConvertStep(input) {
+  const ingestDir = resolveWithinRoot(input.bundlesRoot, input.workflowId, 'ingest');
+  const ingest = await ingestDocument({
+    docId: input.docId,
+    source: input.source,
+    outDir: ingestDir,
+    useLlm: input.useLlm
+  });
+  return {
+    doc_id: input.docId,
+    ver: input.version,
+    paths: ingest.paths,
+    marker: ingest.marker,
+    assets: ingest.assets,
+    chunk_count: ingest.memo.chunkCount
+  };
+}
+
+/**
+ * @param {{workflowId:string,rawSha:string,docId:string,version:number,markerConfigSha:string,parsed:{paths:{docir:string,chunkIndex:string,memo:string,markerMd:string},marker:Record<string, unknown>,assets:Array<{path:string,sha256:string,byteLength:number}>}}} input
+ */
+async function storeParseOutputsStep(input) {
+  const store = getS3BlobStore();
+  const parseRows = [
+    {
+      type: 'docir',
+      format: 'application/json',
+      title: 'DocIR',
+      sourcePath: input.parsed.paths.docir,
+      key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'marker.json' })
+    },
+    {
+      type: 'chunk-index',
+      format: 'application/json',
+      title: 'Chunk Index',
+      sourcePath: input.parsed.paths.chunkIndex,
+      key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'chunks.json' })
+    },
+    {
+      type: 'memo',
+      format: 'text/markdown',
+      title: 'Pipeline Memo',
+      sourcePath: input.parsed.paths.markerMd,
+      key: buildParseObjectKey({ docId: input.docId, version: input.version, filename: 'marker.md' })
+    }
+  ];
+
+  const persistedParse = [];
+  for (const row of parseRows) {
+    const payload = await readFile(row.sourcePath);
+    const artifactSha = sha256(payload);
+    const object = await store.putObjectChecked({
+      key: row.key,
+      payload,
+      contentType: row.format === 'text/markdown' ? 'text/markdown; charset=utf-8' : row.format
+    });
+    persistedParse.push({ ...row, artifactSha, uri: object.uri });
+  }
+
+  const persistedAssets = [];
+  for (const asset of input.parsed.assets) {
+    const key = buildAssetObjectKey(asset.sha256);
+    const payload = await readFile(asset.path);
+    await store.putObjectChecked({
+      key,
+      payload,
+      contentType: 'application/octet-stream'
+    });
+    persistedAssets.push({ key, sha256: asset.sha256, byteLength: asset.byteLength });
+  }
+
+  return withAppClient(async (client) => {
+    const rawKey = buildRawObjectKey(input.rawSha);
+    let inserted = 0;
+    for (const row of persistedParse) {
+      const artifactId = makeRunArtifactId(input.workflowId, /** @type {'docir'|'chunk-index'|'memo'} */ (row.type));
+      const prov = buildArtifactProvenance({
+        runId: input.workflowId,
+        artifactType: row.type,
+        artifactSha256: row.artifactSha,
+        sourceSha256: input.rawSha,
+        producerStep: 'store-parse-outputs',
+        inputs: [
+          { kind: 'doc', id: input.docId },
+          { kind: 'doc_ver', id: `${input.docId}:${input.version}` },
+          { kind: 'raw_sha', sha256: input.rawSha },
+          { kind: 'parse_object', id: row.key, sha256: row.artifactSha }
+        ],
+        parser: {
+          engine: input.parsed.marker.engine,
+          version: input.parsed.marker.version,
+          mode: input.parsed.marker.mode,
+          marker_cfg_sha: input.parsed.marker.marker_cfg_sha,
+          stdout_sha256: input.parsed.marker.stdout_sha256,
+          stderr_sha256: input.parsed.marker.stderr_sha256,
+          timing_ms: input.parsed.marker.timing_ms,
+          use_llm: input.parsed.marker.use_llm
+        },
+        objectKeys: {
+          raw: rawKey,
+          parse: persistedParse.map((file) => file.key),
+          assets: persistedAssets.map((asset) => ({ key: asset.key, sha256: asset.sha256 }))
+        }
+      });
+      const persisted = await insertArtifact(client, {
+        id: artifactId,
+        run_id: input.workflowId,
+        type: row.type,
+        format: row.format,
+        uri: row.uri,
+        sha256: row.artifactSha,
+        title: row.title,
+        prov
+      });
+      if (persisted) inserted += 1;
+    }
+
+    return {
+      inserted,
+      total: persistedParse.length,
+      parse_keys: persistedParse.map((row) => row.key),
+      asset_count: persistedAssets.length,
+      asset_keys: persistedAssets.map((asset) => asset.key),
+      marker_cfg_sha: input.parsed.marker.marker_cfg_sha,
+      marker_version: input.parsed.marker.version,
+      marker_stdout_sha: input.parsed.marker.stdout_sha256,
+      marker_stderr_sha: input.parsed.marker.stderr_sha256
     };
   });
 }
@@ -188,29 +267,14 @@ async function flakyStep(failUntilAttempt) {
 /**
  * @param {{value: string}} input
  */
-async function runS0Prepare(input) {
+async function runS0ReserveDoc(input) {
   return DBOS.runStep(() => reserveDocStep({ source: input.value }), { name: 'reserve-doc' });
-}
-
-/**
- * @param {{sleepMs?: number}} input
- */
-async function runS1Sleep(input) {
-  await DBOS.sleep(Math.max(1, Number(input.sleepMs ?? 1)));
-}
-
-async function runS2SideEffect() {
-  return DBOS.runStep(sideEffectStep, { name: 'side-effect' });
-}
-
-async function runS3Finalize() {
-  return DBOS.runStep(finalizeStep, { name: 'finalize' });
 }
 
 /**
  * @param {{workflowId: string, source: string, rawSha: string, docId: string, version: number}} input
  */
-async function runS2StoreRaw(input) {
+async function runS1StoreRaw(input) {
   return DBOS.runStep(() => storeRawArtifactStep(input), {
     name: 'store-raw',
     retriesAllowed: true,
@@ -221,53 +285,58 @@ async function runS2StoreRaw(input) {
 }
 
 /**
- * @param {{bundlesRoot?: string, value: string}} input
- * @param {string} rawSha
- * @param {string} workflowId
+ * @param {{sleepMs?: number}} input
  */
-async function runS4PersistArtifacts(input, rawSha, workflowId) {
-  const bundlesRoot =
-    typeof input.bundlesRoot === 'string' && input.bundlesRoot.length > 0
-      ? input.bundlesRoot
-      : process.env.JEJAKEKAL_BUNDLES_ROOT ?? defaultBundlesRootPath();
-  return DBOS.runStep(
-    () =>
-      persistArtifactsStep({
-        workflowId,
-        source: input.value,
-        bundlesRoot,
-        rawSha
-      }),
-    {
-      name: 'persist-artifacts',
-      retriesAllowed: true,
-      intervalSeconds: 1,
-      backoffRate: 2,
-      maxAttempts: 3
-    }
-  );
+async function runS1Sleep(input) {
+  await DBOS.sleep(Math.max(1, Number(input.sleepMs ?? 1)));
+}
+
+/**
+ * @param {{workflowId:string, source:string, docId:string, version:number, bundlesRoot:string, useLlm?:boolean}} input
+ */
+async function runS2MarkerConvert(input) {
+  return DBOS.runStep(() => markerConvertStep(input), {
+    name: 'marker-convert',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
+}
+
+/**
+ * @param {{workflowId:string,rawSha:string,docId:string,version:number,markerConfigSha:string,parsed:any}} input
+ */
+async function runS3StoreParseOutputs(input) {
+  return DBOS.runStep(() => storeParseOutputsStep(input), {
+    name: 'store-parse-outputs',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
 }
 
 /**
  * @param {string} workflowId
  */
-async function runS5ArtifactCount(workflowId) {
+async function runS4ArtifactCount(workflowId) {
   return DBOS.runStep(() => countArtifactsStep(workflowId), { name: 'artifact-count' });
 }
 
 /**
  * @param {number} artifactCount
  */
-function runS6ArtifactPostcondition(artifactCount) {
+function runS5ArtifactPostcondition(artifactCount) {
   if (artifactCount < 1) {
     throw new Error('FAILED_NO_ARTIFACT');
   }
 }
 
 async function defaultWorkflowImpl(input) {
-  const reserved = await runS0Prepare(input);
+  const reserved = await runS0ReserveDoc(input);
   const workflowId = DBOS.workflowID ?? 'unknown-workflow';
-  await runS2StoreRaw({
+  await runS1StoreRaw({
     workflowId,
     source: input.value,
     rawSha: reserved.raw_sha,
@@ -275,12 +344,29 @@ async function defaultWorkflowImpl(input) {
     version: reserved.ver
   });
   await runS1Sleep(input);
-  const sideEffect = await runS2SideEffect();
-  const finalize = await runS3Finalize();
-  const persisted = await runS4PersistArtifacts(input, reserved.raw_sha, workflowId);
-  const artifactCount = await runS5ArtifactCount(workflowId);
-  runS6ArtifactPostcondition(artifactCount);
-  return { workflowId, reserved, sideEffect, finalize, persisted };
+  const bundlesRoot =
+    typeof input.bundlesRoot === 'string' && input.bundlesRoot.length > 0
+      ? input.bundlesRoot
+      : process.env.JEJAKEKAL_BUNDLES_ROOT ?? defaultBundlesRootPath();
+  const marker = await runS2MarkerConvert({
+    workflowId,
+    source: input.value,
+    docId: reserved.doc_id,
+    version: reserved.ver,
+    bundlesRoot,
+    useLlm: input.useLlm
+  });
+  const persisted = await runS3StoreParseOutputs({
+    workflowId,
+    rawSha: reserved.raw_sha,
+    docId: reserved.doc_id,
+    version: reserved.ver,
+    markerConfigSha: reserved.marker_config_sha,
+    parsed: marker
+  });
+  const artifactCount = await runS4ArtifactCount(workflowId);
+  runS5ArtifactPostcondition(artifactCount);
+  return { workflowId, reserved, marker, persisted };
 }
 
 async function flakyRetryWorkflowImpl(input) {
@@ -325,18 +411,19 @@ export function registerDbosWorkflows() {
 }
 
 /**
- * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string}} params
+ * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean}} params
  */
 export async function startDefaultWorkflowRun(params) {
   registerDbosWorkflows();
   const workflowFn =
-    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot?: string }) => Promise<unknown>} */ (
+    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean }) => Promise<unknown>} */ (
       defaultWorkflowFn
     );
   return startWorkflowWithConflictRecovery(workflowFn, params, {
     value: params.value,
     sleepMs: params.sleepMs,
-    bundlesRoot: params.bundlesRoot
+    bundlesRoot: params.bundlesRoot,
+    useLlm: params.useLlm
   });
 }
 

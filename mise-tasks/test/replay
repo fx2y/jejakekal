@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-mise x node@24.13.1 -- node --test apps/api/test/replay.integration.test.mjs
+mise x node@24.13.1 -- node --test --test-concurrency=1 apps/api/test/replay.integration.test.mjs
 mkdir -p .cache
 date +%s > .cache/test-replay.stamp

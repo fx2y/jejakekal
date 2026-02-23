@@ -105,9 +105,9 @@ test('C3 dual-ID shell + command flow reaches terminal status', async ({ page })
   await expect(page.locator('#run-status')).toHaveAttribute('data-state', 'done');
   await expect(page.locator('#conv')).not.toContainText('alpha beta gamma');
 
-  await expect(page.locator('#timeline li[data-function-id=\"0\"]')).toContainText('0:prepare:ok');
-  await expect(page.locator('#timeline li[data-function-id=\"1\"]')).toContainText('1:DBOS.sleep:ok');
-  await expect(page.locator('#timeline li[data-function-id=\"4\"]')).toContainText('4:persist-artifacts:ok');
+  await expect(page.locator('#timeline li[data-function-id=\"0\"]')).toContainText('0:reserve-doc:ok');
+  await expect(page.locator('#timeline li[data-function-id=\"2\"]')).toContainText('2:DBOS.sleep:ok');
+  await expect(page.locator('#timeline li[data-function-id=\"4\"]')).toContainText('4:store-parse-outputs:ok');
   await expect(page.locator('#timeline li[data-function-id=\"5\"]')).toContainText('5:artifact-count:ok');
   await expect(page.locator('#artifacts li').first()).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('#artifacts')).toContainText('source_count=1');
@@ -305,7 +305,7 @@ test('C4 artifact viewer deep-link focuses producing execution step', async ({ p
   await page.goto(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
   await page.click('a:has-text("open sources")');
   await expect(page.locator('#timeline li.step-focus')).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator('#timeline li.step-focus')).toContainText('persist-artifacts');
+  await expect(page.locator('#timeline li.step-focus')).toContainText('store-raw');
 });
 
 test('C4 resume control resumes cancelled run', async ({ page, request }) => {

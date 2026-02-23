@@ -1,4 +1,4 @@
-import { HeadObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, HeadObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Buffer } from 'node:buffer';
 import { assertAllowedObjectKey } from '../ingest/keys.mjs';
 
@@ -146,6 +146,19 @@ export function createS3BlobStore(config) {
       const key = assertAllowedObjectKey(params.key);
       return client.send(
         new HeadObjectCommand({
+          Bucket: resolvedBucket,
+          Key: key
+        })
+      );
+    },
+    /**
+     * @param {{bucket?: string, key: string}} params
+     */
+    async deleteObject(params) {
+      const resolvedBucket = asNonEmptyString(params.bucket, bucket);
+      const key = assertAllowedObjectKey(params.key);
+      await client.send(
+        new DeleteObjectCommand({
           Bucket: resolvedBucket,
           Key: key
         })

@@ -17,8 +17,8 @@ test('provenance: builds ids+hashes-only payload', () => {
   assert.equal(prov.artifact_type, 'memo');
   assert.equal(typeof prov.hash.artifact_sha256, 'string');
   assert.equal(typeof prov.hash.source_sha256, 'string');
-  assert.equal(typeof prov.source, 'undefined');
-  assert.equal(typeof prov.content, 'undefined');
+  assert.equal(Object.hasOwn(prov, 'source'), false);
+  assert.equal(Object.hasOwn(prov, 'content'), false);
 });
 
 test('provenance: rejects invalid hashes at boundary', () => {

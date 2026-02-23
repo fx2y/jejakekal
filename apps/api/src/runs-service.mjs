@@ -17,15 +17,24 @@ function normalizeSleepMs(value) {
   return value;
 }
 
+function normalizeUseLlm(value) {
+  if (value == null) return undefined;
+  if (typeof value !== 'boolean') {
+    throw badRequest('invalid_run_payload');
+  }
+  return value;
+}
+
 /**
- * @param {{intent: string, args: Record<string, unknown>, sleepMs?: number}} params
+ * @param {{intent: string, args: Record<string, unknown>, sleepMs?: number, useLlm?: boolean}} params
  */
 function makeInputHash(params) {
   return sha256(
     JSON.stringify({
       intent: params.intent,
       args: params.args,
-      sleepMs: params.sleepMs ?? null
+      sleepMs: params.sleepMs ?? null,
+      useLlm: params.useLlm ?? null
     })
   );
 }
@@ -60,13 +69,14 @@ export function normalizeRunStartPayload(payload) {
       : {};
   const workflowId = normalizeOptionalString(body.workflowId);
   const sleepMs = normalizeSleepMs(body.sleepMs);
+  const useLlm = normalizeUseLlm(body.useLlm);
   if (typeof body.cmd === 'string') {
     const parsed = parseSlashCommand(body.cmd);
-    return { ...parsed, workflowId, sleepMs, compat: false };
+    return { ...parsed, workflowId, sleepMs, useLlm, compat: false };
   }
   if (typeof body.intent === 'string') {
     const parsed = parseIntentPayload(body);
-    return { ...parsed, workflowId, sleepMs, compat: false };
+    return { ...parsed, workflowId, sleepMs, useLlm, compat: false };
   }
   if (typeof body.source === 'string' && body.source.trim().length > 0) {
     return {
@@ -75,6 +85,7 @@ export function normalizeRunStartPayload(payload) {
       args: { source: body.source.trim() },
       workflowId,
       sleepMs,
+      useLlm,
       compat: true
     };
   }
@@ -92,7 +103,7 @@ function toWorkflowInput(command) {
 
 /**
  * @param {import('pg').Client} client
- * @param {{intent:string, args:Record<string, unknown>, workflowId?: string, sleepMs?: number, bundlesRoot?: string}} params
+ * @param {{intent:string, args:Record<string, unknown>, workflowId?: string, sleepMs?: number, useLlm?: boolean, bundlesRoot?: string}} params
  */
 export async function startRunDurably(client, params) {
   const workflowInput = toWorkflowInput(params);
@@ -104,6 +115,7 @@ export async function startRunDurably(client, params) {
     workflowId: params.workflowId,
     value: workflowInput.value,
     sleepMs: params.sleepMs,
+    useLlm: params.useLlm,
     bundlesRoot: params.bundlesRoot
   });
   return { handle, runId: handle.workflowID };

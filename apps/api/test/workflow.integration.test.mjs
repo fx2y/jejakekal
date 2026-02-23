@@ -13,7 +13,8 @@ import { freezeDeterminism } from '../../../packages/core/src/determinism.mjs';
 import { readBundle } from '../../../packages/core/src/run-bundle.mjs';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { listZipEntries } from '../../../packages/core/src/deterministic-zip.mjs';
-import { resolveBundleArtifactUri } from '../src/artifact-uri.mjs';
+import { parseArtifactUri } from '../src/artifact-uri.mjs';
+import { createS3BlobStore, defaultS3BlobStoreConfig } from '../src/blob/s3-store.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -83,9 +84,8 @@ test('C1 smoke: DBOS run writes dbos.workflow_status + dbos.operation_outputs', 
   assert.ok(timeline.length >= 3);
   assert.ok(timeline.some((row) => row.step === 'reserve-doc'));
   assert.ok(timeline.some((row) => row.step === 'store-raw'));
-  assert.ok(timeline.some((row) => row.step === 'side-effect'));
-  assert.ok(timeline.some((row) => row.step === 'finalize'));
-  assert.ok(timeline.some((row) => row.step === 'persist-artifacts'));
+  assert.ok(timeline.some((row) => row.step === 'marker-convert'));
+  assert.ok(timeline.some((row) => row.step === 'store-parse-outputs'));
   assert.ok(timeline.some((row) => row.step === 'artifact-count'));
 
   const header = await readWorkflowStatus(client, workflowId);
@@ -241,8 +241,8 @@ test('C2 canonical /runs is durable-start async and GET /runs/:id projects order
   );
   assert.ok(run.timeline.some((row) => row.function_name === 'reserve-doc'));
   assert.ok(run.timeline.some((row) => row.function_name === 'store-raw'));
-  assert.ok(run.timeline.some((row) => row.function_name === 'side-effect'));
-  assert.ok(run.timeline.some((row) => row.function_name === 'finalize'));
+  assert.ok(run.timeline.some((row) => row.function_name === 'marker-convert'));
+  assert.ok(run.timeline.some((row) => row.function_name === 'store-parse-outputs'));
   assert.ok(run.timeline.every((row) => typeof row.attempt === 'number'));
   assert.ok(run.timeline.some((row) => Array.isArray(row.io_hashes)));
   assert.ok(Array.isArray(run.artifacts));
@@ -823,8 +823,10 @@ test('C6 export and bundle fail closed when persisted artifact blob is missing',
   const rowRes = await client.query(`SELECT id, uri FROM artifact WHERE run_id = $1 AND type = 'docir'`, [started.run_id]);
   assert.equal(rowRes.rows.length, 1);
   const artifactId = rowRes.rows[0].id;
-  const filePath = resolveBundleArtifactUri(api.bundlesRoot, rowRes.rows[0].uri);
-  await rm(filePath, { force: true });
+  const parsed = parseArtifactUri(rowRes.rows[0].uri);
+  assert.equal(parsed.scheme, 's3');
+  const s3Store = createS3BlobStore(defaultS3BlobStoreConfig());
+  await s3Store.deleteObject({ bucket: parsed.bucket, key: parsed.key });
 
   const detailRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
   assert.equal(detailRes.status, 500);
@@ -839,7 +841,7 @@ test('C6 export and bundle fail closed when persisted artifact blob is missing',
   assert.deepEqual(await bundleRes.json(), { error: 'internal_error' });
 });
 
-test('C6 artifact detail fails closed for corrupt JSON blob', async (t) => {
+test('C6 artifact detail fails closed for tampered JSON blob', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
   const api = await startApiServer(0);
@@ -860,8 +862,14 @@ test('C6 artifact detail fails closed for corrupt JSON blob', async (t) => {
   const rowRes = await client.query(`SELECT id, uri FROM artifact WHERE run_id = $1 AND type = 'docir'`, [started.run_id]);
   assert.equal(rowRes.rows.length, 1);
   const artifactId = rowRes.rows[0].id;
-  const filePath = resolveBundleArtifactUri(api.bundlesRoot, rowRes.rows[0].uri);
-  await writeFile(filePath, '{bad json', 'utf8');
+  const parsed = parseArtifactUri(rowRes.rows[0].uri);
+  assert.equal(parsed.scheme, 's3');
+  const s3Store = createS3BlobStore(defaultS3BlobStoreConfig());
+  await s3Store.putObjectChecked({
+    key: parsed.key,
+    payload: Buffer.from('{bad json', 'utf8'),
+    contentType: 'application/json'
+  });
 
   const detailRes = await fetch(`${baseUrl}/artifacts/${encodeURIComponent(artifactId)}`);
   assert.equal(detailRes.status, 500);

@@ -71,7 +71,7 @@ function mapPersistedArtifactsForExport(rows, bundlesRoot) {
 export function sourceFromRunTimeline(timeline) {
   for (const row of timeline) {
     if (
-      row.function_name === 'prepare' &&
+      (row.function_name === 'prepare' || row.function_name === 'reserve-doc') &&
       row.output &&
       typeof row.output === 'object' &&
       typeof row.output.source === 'string'

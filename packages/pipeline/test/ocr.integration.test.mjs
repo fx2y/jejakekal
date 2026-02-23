@@ -5,12 +5,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ingestDocument } from '../src/ingest.mjs';
 
-test('low confidence pages route through OCR gate when enabled', async () => {
+test('C3 hybrid toggle: default is deterministic and opt-in enables hybrid mode', async () => {
   const outDir = await mkdtemp(join(tmpdir(), 'ocr-'));
   try {
-    const result = await ingestDocument({ docId: 'doc-ocr', source: 'ok\nneeds [low] ocr', outDir, useOCR: true });
-    assert.equal(result.memo.ocrRequired, true);
-    assert.equal(result.memo.ocrUsed, true);
+    const deterministic = await ingestDocument({ docId: 'doc-default', source: 'hello', outDir });
+    assert.equal(deterministic.marker.use_llm, 0);
+    assert.equal(deterministic.marker.mode, 'deterministic');
+
+    const hybrid = await ingestDocument({ docId: 'doc-hybrid', source: 'hello', outDir, useLlm: true });
+    assert.equal(hybrid.marker.use_llm, 1);
+    assert.equal(hybrid.marker.mode, 'hybrid');
   } finally {
     await rm(outDir, { recursive: true, force: true });
   }

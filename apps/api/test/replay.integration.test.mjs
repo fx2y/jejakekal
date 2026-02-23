@@ -296,6 +296,6 @@ test('C4 determinism guard: default workflow body keeps nondeterminism out of wo
   const body = bodyMatch[0];
   assert.equal(body.includes('Date.now('), false);
   assert.equal(body.includes('Math.random('), false);
-  assert.equal(source.includes('async function sideEffectStep()'), true);
-  assert.equal(source.includes('Date.now()'), true);
+  assert.equal(source.includes('async function markerConvertStep('), true);
+  assert.equal(source.includes('Date.now()'), false);
 });

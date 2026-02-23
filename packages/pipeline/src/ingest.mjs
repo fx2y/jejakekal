@@ -1,47 +1,70 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildChunkIndex } from './docir.mjs';
-import { runDocirParser } from './parser/docir-runner.mjs';
 import { sha256 } from '../../core/src/hash.mjs';
+import { runMarker } from './marker/runner.mjs';
 
 /**
- * @param {{docId:string, source:string, outDir:string, useOCR?:boolean}} opts
+ * @param {string} value
+ */
+function toMarkdownLine(value) {
+  return String(value).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * @param {{docId:string, source:string, outDir:string, useOCR?:boolean, useLlm?: boolean}} opts
  */
 export async function ingestDocument(opts) {
   await mkdir(opts.outDir, { recursive: true });
-  const { doc, ocrRequired } = runDocirParser({ source: opts.source });
-  const ocrUsed = Boolean(opts.useOCR) && ocrRequired;
-  const chunks = buildChunkIndex(doc);
-
   const rawPath = join(opts.outDir, `${opts.docId}.txt`);
-  const docIrPath = join(opts.outDir, `${opts.docId}.docir.json`);
-  const chunkPath = join(opts.outDir, `${opts.docId}.chunks.json`);
-  const memoPath = join(opts.outDir, `${opts.docId}.memo.json`);
-
   const raw = `${opts.source.trim()}\n`;
   await writeFile(rawPath, raw, 'utf8');
-  await writeFile(docIrPath, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
-  await writeFile(chunkPath, `${JSON.stringify(chunks, null, 2)}\n`, 'utf8');
 
-  const memo = {
-    docId: opts.docId,
-    rawHash: sha256(raw),
-    chunkCount: chunks.length,
-    ocrRequired,
-    ocrUsed,
-    deterministicOrder: chunks.map((chunk) => chunk.chunkId)
-  };
-  await writeFile(memoPath, `${JSON.stringify(memo, null, 2)}\n`, 'utf8');
+  const markerResult = await runMarker({
+    source: opts.source,
+    outDir: opts.outDir,
+    useLlm: Boolean(opts.useLlm ?? opts.useOCR)
+  });
+
+  const chunks = Array.isArray(markerResult.chunks) ? markerResult.chunks : [];
+  const memoPath = join(opts.outDir, `${opts.docId}.memo.md`);
+  const memoLines = [
+    `# Pipeline memo: ${opts.docId}`,
+    `- raw_sha: ${sha256(raw)}`,
+    `- marker_cfg_sha: ${markerResult.marker.marker_cfg_sha}`,
+    `- marker_mode: ${markerResult.marker.mode}`,
+    `- chunk_count: ${chunks.length}`,
+    '## Excerpts',
+    ...chunks.slice(0, 5).map((chunk) => {
+      const chunkId = typeof chunk?.chunk_id === 'string' ? chunk.chunk_id : 'chunk-unknown';
+      const text = toMarkdownLine(chunk?.text ?? '');
+      return `- [${chunkId}] ${text}`;
+    })
+  ];
+  await writeFile(memoPath, `${memoLines.join('\n').trim()}\n`, 'utf8');
+
+  const assets = [];
+  for (const imagePath of markerResult.paths.imageFiles) {
+    const payload = await readFile(imagePath);
+    assets.push({ path: imagePath, sha256: sha256(payload), byteLength: payload.length });
+  }
 
   return {
     paths: {
       raw: rawPath,
-      docir: docIrPath,
-      chunkIndex: chunkPath,
-      memo: memoPath
+      docir: markerResult.paths.markerJson,
+      chunkIndex: markerResult.paths.chunks,
+      memo: memoPath,
+      markerMd: markerResult.paths.markerMarkdown,
+      markerHtml: markerResult.paths.markerHtml,
+      imagesDir: markerResult.paths.imagesDir
     },
-    doc,
+    marker: markerResult.marker,
     chunks,
-    memo
+    assets,
+    memo: {
+      chunkCount: chunks.length,
+      markerMode: markerResult.marker.mode,
+      markerUseLlm: markerResult.marker.use_llm === 1
+    }
   };
 }
