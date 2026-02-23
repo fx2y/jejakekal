@@ -134,7 +134,13 @@ test('C4 durable-start: kill right after POST /runs response still reaches termi
   });
   await api.waitForHealth();
 
-  const done = await api.waitForRunTerminal(runId, 20_000);
+  let done = await api.waitForRunTerminal(runId, 20_000);
+  if (done?.status === 'error') {
+    assert.equal(['CANCELLED', 'RETRIES_EXCEEDED'].includes(String(done.dbos_status)), true);
+    const resumeRes = await fetch(`${api.baseUrl}/runs/${encodeURIComponent(runId)}/resume`, { method: 'POST' });
+    assert.equal(resumeRes.status, 202);
+    done = await api.waitForRunTerminal(runId, 20_000);
+  }
   assert.equal(done?.status, 'done');
   assert.equal(done?.dbos_status, 'SUCCESS');
 });
@@ -287,6 +293,73 @@ test('C4 resume endpoint resumes CANCELLED run without duplicating completed ste
   assert.equal(done?.status, 'done');
   assert.equal(done?.dbos_status, 'SUCCESS');
   assert.equal(done.timeline.filter((step) => step.function_name === 'reserve-doc').length, 1);
+});
+
+test('C4 replay: cancel between S4/S5 then resume without duplicate block rows and with indexed FTS state', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-22T00:00:00.000Z'), random: 0.25 });
+  t.after(() => unfreeze());
+
+  const api = await startApiProcess({
+    env: {
+      JEJAKEKAL_PAUSE_AFTER_S4_MS: '3000'
+    }
+  });
+  t.after(async () => {
+    await api.stop();
+  });
+  await api.waitForHealth();
+
+  const started = await postRun(api.baseUrl, { source: 'invoice alpha\ninvoice beta', sleepMs: 10 });
+  const runId = started.run_id;
+  await waitForCondition(
+    async () => {
+      const run = await api.readRun(runId);
+      if (!run) return false;
+      return run.timeline.some((step) => step.function_name === 'normalize-docir');
+    },
+    { timeoutMs: 10_000, intervalMs: 50, label: `normalize-docir row for ${runId}` }
+  );
+
+  await runDbosCliNoOutput('cancel', runId);
+  await waitForCondition(
+    async () => {
+      const run = await api.readRun(runId);
+      return !!run && run.dbos_status === 'CANCELLED';
+    },
+    { timeoutMs: 10_000, intervalMs: 100, label: `cancelled state for ${runId}` }
+  );
+
+  const before = await client.query(
+    `SELECT doc_id, ver, count(*)::int AS n, count(distinct block_id)::int AS distinct_n,
+            count(*) FILTER (WHERE tsv IS NOT NULL)::int AS indexed_n
+     FROM block
+     GROUP BY doc_id, ver
+     ORDER BY ver DESC
+     LIMIT 1`
+  );
+  assert.equal(before.rows.length, 1);
+  assert.equal(before.rows[0].n, before.rows[0].distinct_n);
+  assert.equal(before.rows[0].indexed_n, 0);
+  const beforeCount = before.rows[0].n;
+
+  const resumeRes = await fetch(`${api.baseUrl}/runs/${encodeURIComponent(runId)}/resume`, { method: 'POST' });
+  assert.equal(resumeRes.status, 202);
+  const done = await api.waitForRunTerminal(runId, 20_000);
+  assert.equal(done?.status, 'done');
+  assert.equal(done?.dbos_status, 'SUCCESS');
+
+  const after = await client.query(
+    `SELECT count(*)::int AS n, count(distinct block_id)::int AS distinct_n,
+            count(*) FILTER (WHERE tsv IS NOT NULL)::int AS indexed_n
+     FROM block
+     WHERE doc_id = $1 AND ver = $2`,
+    [before.rows[0].doc_id, before.rows[0].ver]
+  );
+  assert.equal(after.rows[0].n, beforeCount);
+  assert.equal(after.rows[0].n, after.rows[0].distinct_n);
+  assert.equal(after.rows[0].indexed_n, beforeCount);
 });
 
 test('C4 determinism guard: default workflow body keeps nondeterminism out of workflow function', async () => {

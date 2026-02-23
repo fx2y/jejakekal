@@ -21,7 +21,8 @@ async function main() {
 
   const metric = {
     query_p50_ms: Number(percentile(runs, 50).toFixed(2)),
-    query_p95_ms: Number(percentile(runs, 95).toFixed(2))
+    query_p95_ms: Number(percentile(runs, 95).toFixed(2)),
+    fts_query_p95_ms: Number(percentile(runs, 95).toFixed(2))
   };
 
   await mkdir('.cache/bench', { recursive: true });

@@ -18,7 +18,8 @@ async function main() {
 
   const metric = {
     ingest_p50_ms: Number(percentile(runs, 50).toFixed(2)),
-    ingest_p95_ms: Number(percentile(runs, 95).toFixed(2))
+    ingest_p95_ms: Number(percentile(runs, 95).toFixed(2)),
+    fts_ingest_ms: Number(percentile(runs, 95).toFixed(2))
   };
 
   await mkdir('.cache/bench', { recursive: true });

@@ -1,6 +1,7 @@
 /**
  * @typedef {{index:number,text:string,confidence:number}} Page
  */
+export { deriveBlockId, normalizeMarkerToBlocks } from './docir/normalize-marker.mjs';
 
 /**
  * @param {string} source

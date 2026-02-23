@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { DBOS, DBOSWorkflowConflictError } from '@dbos-inc/dbos-sdk';
 import { ingestDocument } from '../../../packages/pipeline/src/ingest.mjs';
+import { normalizeMarkerToBlocks } from '../../../packages/pipeline/src/docir/normalize-marker.mjs';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { makeClient } from './db.mjs';
 import { resolveWithinRoot } from './artifact-uri.mjs';
@@ -15,6 +16,7 @@ import {
 } from './ingest/keys.mjs';
 import { createS3BlobStore, defaultS3BlobStoreConfig } from './blob/s3-store.mjs';
 import { MARKER_CONFIG_PLACEHOLDER_SHA, reserveDocVersion } from './ingest/doc-repository.mjs';
+import { populateBlockTsv, upsertBlockLedger } from './search/block-repository.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean }) => Promise<unknown>) | undefined} */
@@ -127,6 +129,7 @@ async function markerConvertStep(input) {
     doc_id: input.docId,
     ver: input.version,
     paths: ingest.paths,
+    marker_json: ingest.markerJson,
     marker: ingest.marker,
     assets: ingest.assets,
     chunk_count: ingest.memo.chunkCount
@@ -134,7 +137,7 @@ async function markerConvertStep(input) {
 }
 
 /**
- * @param {{workflowId:string,rawSha:string,docId:string,version:number,markerConfigSha:string,parsed:{paths:{docir:string,chunkIndex:string,memo:string,markerMd:string},marker:Record<string, unknown>,assets:Array<{path:string,sha256:string,byteLength:number}>}}} input
+ * @param {{workflowId:string,rawSha:string,docId:string,version:number,markerConfigSha:string,parsed:{paths:{docir:string,chunkIndex:string,memo:string,markerMd:string},marker_json:Record<string, unknown>,marker:Record<string, unknown>,assets:Array<{path:string,sha256:string,byteLength:number}>}}} input
  */
 async function storeParseOutputsStep(input) {
   const store = getS3BlobStore();
@@ -232,10 +235,12 @@ async function storeParseOutputsStep(input) {
       if (persisted) inserted += 1;
     }
 
+    const parseShaByKey = Object.fromEntries(persistedParse.map((row) => [row.key, row.artifactSha]));
     return {
       inserted,
       total: persistedParse.length,
       parse_keys: persistedParse.map((row) => row.key),
+      parse_sha_by_key: parseShaByKey,
       asset_count: persistedAssets.length,
       asset_keys: persistedAssets.map((asset) => asset.key),
       marker_cfg_sha: input.parsed.marker.marker_cfg_sha,
@@ -243,6 +248,78 @@ async function storeParseOutputsStep(input) {
       marker_stdout_sha: input.parsed.marker.stdout_sha256,
       marker_stderr_sha: input.parsed.marker.stderr_sha256
     };
+  });
+}
+
+/**
+ * @param {{docId:string,version:number,rawSha:string,markerConfigSha:string,markerJson:Record<string, unknown>,marker:{version?:string,stdout_sha256?:string,stderr_sha256?:string},parseKeys:string[],parseShaByKey:Record<string,string>}} input
+ */
+async function normalizeDocirStep(input) {
+  const blocks = normalizeMarkerToBlocks({
+    docId: input.docId,
+    version: input.version,
+    markerJson: input.markerJson
+  });
+  const rawKey = buildRawObjectKey(input.rawSha);
+  const provenance = {
+    version: 1,
+    doc_id: input.docId,
+    ver: input.version,
+    hash: {
+      raw_sha256: input.rawSha
+    },
+    parser: {
+      marker_cfg_sha: input.markerConfigSha,
+      version: typeof input.marker.version === 'string' ? input.marker.version : null,
+      stdout_sha256: typeof input.marker.stdout_sha256 === 'string' ? input.marker.stdout_sha256 : null,
+      stderr_sha256: typeof input.marker.stderr_sha256 === 'string' ? input.marker.stderr_sha256 : null
+    },
+    object_keys: {
+      raw: rawKey,
+      parse: input.parseKeys,
+      parse_sha256: input.parseShaByKey
+    }
+  };
+  return withAppClient(async (client) => {
+    await client.query('BEGIN');
+    try {
+      const inserted = await upsertBlockLedger(client, {
+        docId: input.docId,
+        version: input.version,
+        blocks,
+        provenance
+      });
+      await client.query('COMMIT');
+      return {
+        block_count: inserted.upserted,
+        block_ids: blocks.map((block) => block.block_id),
+        block_shas: blocks.map((block) => block.block_sha)
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  });
+}
+
+/**
+ * @param {{workflowId:string,docId:string,version:number,language?:string}} input
+ */
+async function indexFtsStep(input) {
+  return withAppClient(async (client) => {
+    await client.query('BEGIN');
+    try {
+      const indexed = await populateBlockTsv(client, {
+        docId: input.docId,
+        version: input.version,
+        language: input.language
+      });
+      await client.query('COMMIT');
+      return indexed;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
   });
 }
 
@@ -318,19 +395,51 @@ async function runS3StoreParseOutputs(input) {
 }
 
 /**
+ * @param {{docId:string,version:number,rawSha:string,markerConfigSha:string,markerJson:Record<string, unknown>,marker:{version?:string,stdout_sha256?:string,stderr_sha256?:string},parseKeys:string[],parseShaByKey:Record<string,string>}} input
+ */
+async function runS4NormalizeDocir(input) {
+  return DBOS.runStep(() => normalizeDocirStep(input), {
+    name: 'normalize-docir',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
+}
+
+/**
+ * @param {{workflowId:string,docId:string,version:number,language?:string}} input
+ */
+async function runS5IndexFts(input) {
+  return DBOS.runStep(() => indexFtsStep(input), {
+    name: 'index-fts',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
+}
+
+/**
  * @param {string} workflowId
  */
-async function runS4ArtifactCount(workflowId) {
+async function runS6ArtifactCount(workflowId) {
   return DBOS.runStep(() => countArtifactsStep(workflowId), { name: 'artifact-count' });
 }
 
 /**
  * @param {number} artifactCount
  */
-function runS5ArtifactPostcondition(artifactCount) {
+function runS7ArtifactPostcondition(artifactCount) {
   if (artifactCount < 1) {
     throw new Error('FAILED_NO_ARTIFACT');
   }
+}
+
+async function runS4ToS5Pause() {
+  const pauseMs = Number(process.env.JEJAKEKAL_PAUSE_AFTER_S4_MS ?? 0);
+  if (!Number.isFinite(pauseMs) || pauseMs <= 0) return;
+  await DBOS.sleep(Math.max(1, Math.trunc(pauseMs)));
 }
 
 async function defaultWorkflowImpl(input) {
@@ -364,9 +473,29 @@ async function defaultWorkflowImpl(input) {
     markerConfigSha: reserved.marker_config_sha,
     parsed: marker
   });
-  const artifactCount = await runS4ArtifactCount(workflowId);
-  runS5ArtifactPostcondition(artifactCount);
-  return { workflowId, reserved, marker, persisted };
+  const normalized = await runS4NormalizeDocir({
+    docId: reserved.doc_id,
+    version: reserved.ver,
+    rawSha: reserved.raw_sha,
+    markerConfigSha: reserved.marker_config_sha,
+    markerJson: marker.marker_json,
+    marker: {
+      version: marker.marker?.version,
+      stdout_sha256: marker.marker?.stdout_sha256,
+      stderr_sha256: marker.marker?.stderr_sha256
+    },
+    parseKeys: persisted.parse_keys,
+    parseShaByKey: persisted.parse_sha_by_key
+  });
+  await runS4ToS5Pause();
+  const indexed = await runS5IndexFts({
+    workflowId,
+    docId: reserved.doc_id,
+    version: reserved.ver
+  });
+  const artifactCount = await runS6ArtifactCount(workflowId);
+  runS7ArtifactPostcondition(artifactCount);
+  return { workflowId, reserved, marker, persisted, normalized, indexed };
 }
 
 async function flakyRetryWorkflowImpl(input) {

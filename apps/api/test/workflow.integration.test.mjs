@@ -15,6 +15,7 @@ import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { listZipEntries } from '../../../packages/core/src/deterministic-zip.mjs';
 import { parseArtifactUri } from '../src/artifact-uri.mjs';
 import { createS3BlobStore, defaultS3BlobStoreConfig } from '../src/blob/s3-store.mjs';
+import { queryRankedBlocksByTsQuery } from '../src/search/block-repository.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -553,6 +554,50 @@ test('C4 bundle endpoint is deterministic and preserves /export compatibility', 
   const exported = await exportRes.json();
   assert.equal(exported.run_id, started.run_id);
   assert.equal(typeof exported.run_bundle_path, 'string');
+});
+
+test('C4 fts correctness: block ledger persists and @@ ranked query is deterministic', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const source = 'invoice alpha\ninvoice invoice beta\ngamma';
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source, sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+  assert.equal(run.timeline.some((step) => step.function_name === 'normalize-docir'), true);
+  assert.equal(run.timeline.some((step) => step.function_name === 'index-fts'), true);
+
+  const indexRes = await client.query(`SELECT to_regclass('public.block_tsv_gin') AS idx`);
+  assert.equal(indexRes.rows[0].idx, 'block_tsv_gin');
+
+  const blockRows = await client.query(
+    `SELECT doc_id, ver, block_id, block_sha, tsv
+     FROM block
+     WHERE doc_id IN (SELECT doc_id FROM doc_ver ORDER BY created_at DESC LIMIT 1)
+     ORDER BY block_id ASC`
+  );
+  assert.equal(blockRows.rows.length >= 3, true);
+  assert.equal(blockRows.rows.every((row) => typeof row.block_sha === 'string' && row.block_sha.length === 64), true);
+  assert.equal(blockRows.rows.every((row) => row.tsv != null), true);
+
+  const hits = await queryRankedBlocksByTsQuery(client, { query: 'invoice', limit: 20 });
+  assert.equal(hits.length >= 1, true);
+  assert.equal(
+    hits.every((row, index) => index === 0 || row.rank <= hits[index - 1].rank),
+    true
+  );
+  const misses = await queryRankedBlocksByTsQuery(client, { query: 'nonexistenttoken', limit: 20 });
+  assert.deepEqual(misses, []);
 });
 
 test('P0 malformed JSON on POST /runs returns 400 invalid_json', async (t) => {

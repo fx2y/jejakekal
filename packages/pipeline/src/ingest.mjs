@@ -58,6 +58,7 @@ export async function ingestDocument(opts) {
       markerHtml: markerResult.paths.markerHtml,
       imagesDir: markerResult.paths.imagesDir
     },
+    markerJson: markerResult.markerJson,
     marker: markerResult.marker,
     chunks,
     assets,
