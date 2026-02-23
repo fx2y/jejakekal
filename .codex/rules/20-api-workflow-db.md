@@ -1,36 +1,33 @@
 ---
-description: API/workflow durability + DB invariants.
+description: API/workflow/DB truth, security, durability contracts.
 paths:
   - apps/api/src/**
   - apps/api/test/**
   - infra/sql/**
 ---
 
-# Workflow/DB Rules
+# API/Workflow/DB Rules
 
-- DBOS tables are workflow truth: `dbos.workflow_status` + `dbos.operation_outputs`.
-- Canonical sprint2 API surface is additive: `/runs*` + `/artifacts*` + `/healthz`; do not reintroduce `/api/*`.
-- `run_id`/`workflowId` are security boundaries: raw-path parse, decode, allowlist validation, traversal rejection.
-- Caller `workflowId` is strict dedup key: claim persisted payload hash; hash mismatch must return `409 workflow_id_payload_mismatch`.
-- Payload contract keys are stable: `run_id,status,dbos_status,header,timeline`; export adds `artifacts,run_bundle_path`.
-- Run start payload migration is explicit/time-boxed: legacy `{source}` accepts only via compat window, canonical target is `{intent,args}`, and default-source synthesis is banned.
-- Step names/IDs are durable identifiers; renames require migration + proof.
-- Server lifecycle contract: startup must fail-fast on bind errors; close paths must be idempotent/retryable and shutdown DBOS runtime cleanly.
-- DB schema/projection changes require replay/idempotency proof updates in same PR.
+- Workflow truth is DBOS tables (`dbos.workflow_status`,`dbos.operation_outputs`); projections must honor DBOS quirks (`function_id` 0-based, serialized envelopes).
+- Canonical API is `/runs*` + `/artifacts*` + `/healthz`; forbid `/api/*` resurrection.
+- `/runs*` removal blocked before `2026-06-30`; later removal requires explicit migration proof.
+- `run_id`/`artifact_id`/`workflowId` are security boundaries: parse raw pathname, decode+allowlist validate, reject traversal.
+- `workflowId` dedup is strict: persist normalized payload hash claim; mismatch => `409 workflow_id_payload_mismatch`.
+- Start payload normalize order: canonical `{intent,args}` -> optional slash `cmd` -> compat `{source}` (time-boxed); never default-source synthesis.
+- Run projection keeps frozen keys (`run_id,status,dbos_status,header,timeline`); additive fields only.
+- Typed `4xx` for client faults; opaque `internal_error` for server faults; never leak internals.
+- External effects must go through `callIdempotentEffect(effect_key, ...)` with per-key serialization + PG advisory xact lock.
+- DB/schema/projection behavior deltas must ship replay/idempotency proofs in same change.
 
-# Determinism Rules
+# Runtime/State Invariants
 
-- Workflow tests touching behavior freeze `Date.now` + `Math.random`.
-- Timeouts in frozen-clock suites must use monotonic clock (`performance.now`), never wall clock.
-- Crash/resume tests must use real kill (`SIGKILL`) and prove no duplicate completed steps.
-- Duplicate trigger/effect tests must prove exactly-once-effective side effect under concurrency.
-- `callIdempotentEffect` usage is mandatory; implementation must serialize per key + lock (`pg_advisory_xact_lock`) before effect fn.
+- Artifact rows are append-only; no UPDATE/DELETE mutation path.
+- Workflow terminal success requires persisted artifact count `>=1`.
+- Chat ledger stores command envelope only (`cmd,args,run_id`); deterministic dedup key (`run_id`,`cmd`,sorted `args`) with conflict-ignore semantics.
+- Resume endpoint is fail-closed: non-resumable statuses return typed `409 run_not_resumable`.
 
 # Failure Recipes
 
-- Replayed step ran twice: inspect `dbos.operation_outputs` order/count + workflow ID reuse.
-- Duplicate external effect: inspect effect key composition, local serialization, advisory-lock path.
-- Hostile ID probe gives false 404: retry with `curl --path-as-is` (avoid client normalization).
-- Route-policy drift (`/runs*` vs `/artifacts*`): fix AGENTS + rules + learnings in the same change, never piecemeal.
-- Timeline mismatch: verify projection mapping from DBOS `function_id/function_name` (0-based IDs, epoch-ms columns, serialized output envelope).
-- DB suites failing/skipped: `mise run up && mise run reset`; ensure runtime shutdown in teardown for direct-DBOS tests.
+- Hostile ID probe false-negative: retry with `curl --path-as-is`.
+- Duplicate effect observed: audit effect-key composition + lock path.
+- Timeline/order mismatch: compare API projection to DBOS `function_id` order.

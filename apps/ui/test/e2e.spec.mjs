@@ -160,7 +160,7 @@ test('C3 HX polling endpoint returns OOB updates for exec+artifacts+status', asy
   });
   expect(pollRes.status()).toBe(200);
   const html = await pollRes.text();
-  expect(html).toContain('id="exec"');
+  expect(html).toContain('id="exec" hx-swap-oob="true"');
   expect(html).toContain('id="artifacts" hx-swap-oob="true"');
   expect(html).toContain('id="run-status"');
   expect(html).toContain('hx-swap-oob="true"');
@@ -200,7 +200,9 @@ test('C6 UI raw-path boundaries return typed/parity-safe errors and no idle poll
     path: '/runs/%2E%2E'
   });
   expect(badRun.status).toBe(400);
-  expect(badRun.json).toEqual({ error: 'invalid_run_id', field: 'run_id' });
+  expect(badRun.text).toContain('<!doctype html>');
+  expect(badRun.text).toContain('id="run-status" data-state="error"');
+  expect(badRun.text).toContain('error:invalid_run_id');
 
   const badArtifact = await rawHttp({
     port: runtime.uiPort,
@@ -208,7 +210,8 @@ test('C6 UI raw-path boundaries return typed/parity-safe errors and no idle poll
     path: '/artifacts/%2E%2E'
   });
   expect(badArtifact.status).toBe(400);
-  expect(badArtifact.json).toEqual({ error: 'invalid_artifact_id', field: 'artifact_id' });
+  expect(badArtifact.text).toContain('id="run-status" data-state="error"');
+  expect(badArtifact.text).toContain('error:invalid_artifact_id');
 
   const badPollMalformed = await rawHttp({
     port: runtime.uiPort,
@@ -228,6 +231,41 @@ test('C6 UI raw-path boundaries return typed/parity-safe errors and no idle poll
   });
   expect(badPollTraversal.status).toBe(400);
   expect(badPollTraversal.text).toContain('data-state="error"');
+});
+
+test('C8 run route artifact pane is run-scoped by default with explicit global escape hatch', async ({
+  request
+}) => {
+  const runOne = await request.post(`${baseUrl}/runs`, {
+    data: { cmd: '/doc c8-run-one' }
+  });
+  expect(runOne.status()).toBe(202);
+  const startedOne = await runOne.json();
+
+  const runTwo = await request.post(`${baseUrl}/runs`, {
+    data: { cmd: '/doc c8-run-two' }
+  });
+  expect(runTwo.status()).toBe(202);
+  const startedTwo = await runTwo.json();
+
+  for (let i = 0; i < 120; i += 1) {
+    const [oneRes, twoRes] = await Promise.all([
+      request.get(`http://127.0.0.1:${runtime.apiPort}/runs/${encodeURIComponent(startedOne.run_id)}`),
+      request.get(`http://127.0.0.1:${runtime.apiPort}/runs/${encodeURIComponent(startedTwo.run_id)}`)
+    ]);
+    expect(oneRes.status()).toBe(200);
+    expect(twoRes.status()).toBe(200);
+    const [one, two] = await Promise.all([oneRes.json(), twoRes.json()]);
+    if (one.status === 'done' && two.status === 'done') break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  const runPage = await request.get(`${baseUrl}/runs/${encodeURIComponent(startedOne.run_id)}`);
+  expect(runPage.status()).toBe(200);
+  const html = await runPage.text();
+  expect(html).toContain(`scope=run:${startedOne.run_id}`);
+  expect(html).toContain('/artifacts');
+  expect(html).not.toContain(`/runs/${startedTwo.run_id}`);
 });
 
 test('C6 direct missing run route renders full shell with error state (not idle)', async ({ request }) => {

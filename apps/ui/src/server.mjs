@@ -20,7 +20,8 @@ import {
   renderExecutionPane,
   renderMainFragment,
   renderPage,
-  renderPollFragment
+  renderPollFragment,
+  withExecOob
 } from './ui-render.mjs';
 import { statusModel } from './ui-view-model.mjs';
 
@@ -166,12 +167,11 @@ function uiRunView(state, requestedRunId) {
  * @param {{statusCode:number, statusText:string}} errorState
  */
 function sendPollErrorResponse(res, headers, filters, errorState) {
-  const exec = renderExecutionPane(null, filters, {
-    status: { state: 'error', text: errorState.statusText },
-    emptyText: 'Run unavailable.'
-  }).replace(
-    '<section id="execution-plane" class="plane">',
-    '<section id="execution-plane" class="plane" hx-swap-oob="true">'
+  const exec = withExecOob(
+    renderExecutionPane(null, filters, {
+      status: { state: 'error', text: errorState.statusText },
+      emptyText: 'Run unavailable.'
+    })
   );
   const artifacts = renderArtifactsPane([], filters);
   if (shouldServeFullDocument(headers)) {
@@ -197,6 +197,52 @@ function sendPollErrorResponse(res, headers, filters, errorState) {
       statusText: errorState.statusText
     })
   );
+}
+
+/**
+ * @param {import('node:http').ServerResponse} res
+ * @param {import('node:http').IncomingHttpHeaders} headers
+ * @param {{type?: string, visibility?: string, q?: string, sleepMs?: number, step?: number}} filters
+ * @param {{statusCode:number, statusText:string}} errorState
+ */
+function sendMainRouteErrorResponse(res, headers, filters, errorState) {
+  const conv = renderConversationPane('error', errorState.statusText);
+  const exec = renderExecutionPane(null, filters, {
+    status: { state: 'error', text: errorState.statusText },
+    emptyText: 'Run unavailable.'
+  });
+  const artifacts = renderArtifactsPane([], filters);
+  if (shouldServeFullDocument(headers)) {
+    const page = renderPage({
+      title: 'Error',
+      conv,
+      exec,
+      artifacts
+    });
+    res.writeHead(errorState.statusCode, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(page);
+    return;
+  }
+  res.writeHead(errorState.statusCode, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(renderMainFragment({ conv, exec, artifacts }));
+}
+
+/**
+ * @param {{run: import('./ui-view-model.mjs').RunProjection | null, artifacts: Array<unknown>}} state
+ * @param {string | null} runId
+ */
+function runArtifacts(state, runId) {
+  if (!runId) return state.artifacts;
+  const projected = Array.isArray(state.run?.artifacts) ? state.run.artifacts : [];
+  if (projected.length > 0) return projected;
+  return state.artifacts.filter((artifact) => {
+    return (
+      artifact != null &&
+      typeof artifact === 'object' &&
+      'run_id' in artifact &&
+      /** @type {{run_id?:unknown}} */ (artifact).run_id === runId
+    );
+  });
 }
 
 /**
@@ -369,14 +415,16 @@ async function handleUiRoutes(req, res, ctx) {
       }
       const runView = uiRunView(state, runId);
       const status = runView.status;
-      const exec = renderExecutionPane(state.run, filters, {
-        status,
-        emptyText: runView.execEmptyText
-      }).replace(
-        '<section id="execution-plane" class="plane">',
-        '<section id="execution-plane" class="plane" hx-swap-oob="true">'
+      const exec = withExecOob(
+        renderExecutionPane(state.run, filters, {
+          status,
+          emptyText: runView.execEmptyText
+        })
       );
-      const artifacts = renderArtifactsPane(state.artifacts, filters);
+      const artifacts = renderArtifactsPane(runArtifacts(state, runId), filters, {
+        scope: 'run',
+        runId
+      });
 
       if (shouldServeFullDocument(req.headers)) {
         const page = renderPage({
@@ -386,7 +434,10 @@ async function handleUiRoutes(req, res, ctx) {
             status,
             emptyText: runView.execEmptyText
           }),
-          artifacts
+          artifacts: renderArtifactsPane(runArtifacts(state, runId), filters, {
+            scope: 'run',
+            runId
+          })
         });
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(page);
@@ -405,8 +456,21 @@ async function handleUiRoutes(req, res, ctx) {
       return true;
     }
 
-    const runId = decodeRunRouteId(pathname);
-    const artifactId = decodeArtifactRouteId(pathname);
+    let runId = null;
+    let artifactId = null;
+    try {
+      runId = decodeRunRouteId(pathname);
+      artifactId = decodeArtifactRouteId(pathname);
+    } catch (error) {
+      if (isRequestError(error)) {
+        sendMainRouteErrorResponse(res, req.headers, filters, {
+          statusCode: error.status,
+          statusText: `error:${String(error.payload.error ?? 'invalid_route_id')}`
+        });
+        return true;
+      }
+      throw error;
+    }
     const isMainRoute = pathname === '/' || pathname === '/artifacts' || !!runId || !!artifactId;
     if (isMainRoute) {
       const state = await loadUiState(ctx.apiPort, runId, filters);
@@ -418,7 +482,9 @@ async function handleUiRoutes(req, res, ctx) {
         emptyText: runView.execEmptyText
       });
 
-      let artifacts = renderArtifactsPane(state.artifacts, filters);
+      let artifacts = runId
+        ? renderArtifactsPane(runArtifacts(state, runId), filters, { scope: 'run', runId })
+        : renderArtifactsPane(state.artifacts, filters, { scope: 'all' });
       if (artifactId) {
         const artifactRes = await getArtifact(ctx.apiPort, artifactId);
         artifacts = renderArtifactViewer(

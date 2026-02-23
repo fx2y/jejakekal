@@ -1,23 +1,23 @@
 ---
-description: Repo-wide coding + review policy.
+description: Repo-wide engineering law (applies unless stricter scoped rule overrides).
 ---
 
 # Global Rules
 
-- Runtime baseline: Node ESM (`.mjs`) + JSDoc-typed JS (`checkJs` on); exported surfaces need explicit input/output contracts.
-- Design baseline: deterministic-first, explicit I/O seams, no hidden mutable global state.
-- Preferred code shape: `parse -> validate -> normalize -> pure transform -> effect adapter -> canonical projection`.
-- Keep side effects at edges; core logic must replay from persisted inputs.
-- No silent invariant-masking fallbacks; emit typed errors or fail fast.
-- Canonicalize all artifact JSON used by tests/goldens (stable key order where relevant, newline-terminated).
-- Never bypass `mise` for authoritative build/test verdicts.
-- Compatibility over novelty: schema/route/task changes are additive unless explicit migration lands with tests.
-- Resolve uncertainty with proofs (tests/golden/perf), not comments.
+- Determinism first; convenience second.
+- Prefer seam-first additive changes over broad rewrites.
+- Keep core pure and replayable; isolate effects behind explicit adapters.
+- Canonical code flow: `parse -> validate -> normalize -> pure transform -> effect adapter -> canonical projection`.
+- No hidden mutable global state.
+- Fail closed; never synthesize fallback data to hide invariant breaks.
+- Typed `4xx` for client fault; opaque `internal_error` for server fault.
+- Stable public contracts (keys/IDs/routes/task names) unless additive migration proof lands.
+- Canonical JSON output: stable structure, newline-terminated; diff noise is a bug.
+- Authoritative execution/test verdicts run through `mise` tasks only.
 
-# Review Bar (opinionated)
+# Review Bar
 
-- Reject non-replayable behavior or nondeterministic diffs.
-- Reject fixes without reproduction + regression proof.
-- Reject behavior deltas without test/golden/perf evidence.
-- Reject broad rewrites where seam-level adapters suffice.
-- Require debuggable artifacts: stable IDs, typed errors, structured outputs.
+- Reject nondeterministic behavior/diffs.
+- Reject behavior deltas without executable proof.
+- Reject migration/removal without explicit compat window + closure evidence.
+- Reject fixes lacking repro + regression test.

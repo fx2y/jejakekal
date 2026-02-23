@@ -1,28 +1,29 @@
 ---
-description: Pipeline determinism + run-bundle/golden contracts.
+description: Pipeline outputs, artifact provenance, export/bundle determinism.
 paths:
   - packages/pipeline/**
-  - packages/core/src/run-bundle.mjs
-  - packages/core/test/run-bundle.unit.test.mjs
-  - scripts/golden-*.mjs
+  - packages/core/src/**
+  - apps/api/src/export-run.mjs
+  - apps/api/src/runs-bundle-zip.mjs
   - golden/**
 ---
 
 # Pipeline/Bundle Rules
 
-- Pipeline output quartet is fixed: `raw`, `docir`, `chunk-index`, `memo`.
-- Artifact ID vocabulary is canonical: `chunk-index` only (never `chunks`).
-- Chunk IDs/order are deterministic (`chunk-###` from source order).
-- Low-confidence routing rules must be deterministic (same input => same OCR flag/path).
-- Run-bundle base files are fixed: `manifest,timeline,tool-io,artifacts,citations`; DBOS snapshots are additive (`workflow_status`,`operation_outputs`).
-- Bundle JSON is canonical/stable/newline-terminated; diff noise is a bug.
-- Normalize machine-variant fields (`createdAt`, bundle root/path context) before structural diff.
-- Export must fail explicitly on unrecoverable source (`422 source_unrecoverable`), never synthesize fallback content.
-- Bundle temp roots should be cleaned on server close by default; retention must be explicit opt-in.
-- Golden updates are review events (`record` then `diff`), never blind regenerate.
+- Canonical artifact set is fixed: `raw`,`docir`,`chunk-index`,`memo`.
+- Artifact IDs are immutable vocabulary (`chunk-index` only; no aliases).
+- Pipeline/output ordering and IDs must be deterministic for identical input.
+- Provenance is IDs+hashes only; raw source/content must not cross provenance boundary.
+- Export and bundle are persisted-artifact-first readers; avoid recomputation when rows exist.
+- All persisted-blob readers (detail/download/export/bundle) must read by `uri` and verify stored `sha256`; mismatch/unreadable => opaque `5xx`.
+- JSON artifact content decode is strict; corrupt JSON is invariant break (opaque `5xx`).
+- Bundle endpoints `/runs/:id/bundle` and `/runs/:id/bundle.zip` must remain byte-identical deterministic aliases.
+- Bundle JSON/files are canonical (stable structure/newline); manifest time pins to run header `created_at` when present.
+- Blob root defaults to stable repo cache (`.cache/run-bundles`); cleanup is explicit opt-in, never default.
+- Golden changes are review events: inspect intent before record/diff updates.
 
 # Failure Recipes
 
-- Golden diff noisy on time/path only: fix normalization; do not loosen assertions.
-- Cross-machine drift: enforce locale/timezone/path neutrality end-to-end.
-- Missing/renamed artifact: preserve canonical IDs (`raw,docir,chunk-index,memo`) and update all consuming contracts in one change.
+- Cross-machine hash drift: audit path/time/env normalization and entry ordering.
+- Export false-green suspicion: verify blob preflight read+sha checks are enforced.
+- Vocabulary drift: restore canonical IDs across pipeline, API, UI, and tests in one change.

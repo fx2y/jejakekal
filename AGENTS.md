@@ -1,72 +1,92 @@
 # Jejakekal Policy SoT
 
-Repo memory SoT for humans+agents.
-Hard meta-rules:
-- Keep exactly one git-tracked repo-root memory file: `AGENTS.md`.
-- `CONTRIBUTING.md`/`HARNESS.md` are summaries, never authority.
-- Private prefs live in untracked `AGENTS.local.md`.
+Repo constitution for humans+agents. Default posture: deterministic, fail-closed, additive.
+
+## Memory SoT (hard)
+
+- Exactly one git-tracked repo-root memory file: `AGENTS.md`.
+- `CONTRIBUTING.md`/`HARNESS.md` are summaries only.
+- Private/operator prefs live in untracked `AGENTS.local.md`.
 
 ## Command SoT (hard)
 
-- Bootstrap: `mise install`
-- Inner loop: `mise watch verify` (or narrower watch task)
-- Quick gate: `mise run verify` (`lint`,`typecheck`,`test:unit`,`test:workflow`)
-- Release verdict: `mise run ci` (only)
-- Stack ops: `mise run up|down|reset|psql`
-- Golden: `mise run golden:record && mise run golden:diff`
-- UI behavior: `mise run ui:e2e`
-- Perf budget: `mise run bench:check`
-- CI parity: GH Action must execute `mise run ci` only
+- Bootstrap: `mise install`.
+- Inner loop: `mise watch verify` (or narrower watch task).
+- Dev gate: `mise run verify` (`lint`,`typecheck`,`test:unit`,`test:workflow`).
+- Release verdict: `mise run ci` only.
+- Stack ops: `mise run up|down|reset|psql`.
+- Readiness gate: `mise run wait:health -- <url> [timeoutMs intervalMs]` before first probes.
+- Golden discipline: `mise run golden:record && mise run golden:diff`.
+- UI behavior gate: `mise run ui:e2e`.
+- Perf gate: `mise run bench:check`.
+- CI parity: GH Action executes `mise run ci` only.
 
-## Engineering Doctrine (hard, opinionated)
+## Product Laws (hard)
+
+- Runtime truth is DBOS tables: `dbos.workflow_status`, `dbos.operation_outputs`.
+- Canonical API surface: `/runs*` + `/artifacts*` + `/healthz`; forbid `/api/*` resurrection.
+- `/runs*` removal forbidden before **2026-06-30**; any later removal requires explicit migration proof.
+- Start payload migration is explicit/time-boxed: canonical `{intent,args}`; compat `{source}` allowed only during window (target sunset **2026-06-30**); no default-source synthesis.
+- `POST /runs` also accepts slash `cmd` parser; invalid/malformed inputs are typed `4xx`.
+- `workflowId` is strict dedup key: payload-hash mismatch => `409 workflow_id_payload_mismatch`.
+- Run projection frozen keys: `run_id,status,dbos_status,header,timeline`; additive fields only (e.g. `artifacts`).
+- Artifact vocabulary is fixed: `raw,docir,chunk-index,memo` (`chunk-index` only spelling).
+- Chat is control-plane ledger only (`cmd,args,run_id`); storing/rendering answer text is contract violation.
+
+## Correctness Doctrine (hard)
 
 - Determinism > convenience.
-- Core is pure; effects at boundaries only.
-- Behavior contract beats implementation style; preserve public keys/IDs/routes unless migrated additively.
-- Fail closed: no silent fallback data synthesis for broken invariants.
-- Typed client errors (`4xx`) for client faults; server faults stay opaque (`internal_error`).
-- Exactly-once-effective side effects only via `callIdempotentEffect(effectKey, ...)` (serialized + locked).
-- Durability is non-optional: checkpointed steps, replay, crash-resume from last completed step.
-- Security baseline: strict run-id parsing/allowlist, raw-path hostile handling, export write confined under bundle root.
-- Sandbox is strict executor contract, not general shell.
-- Perf caps are correctness caps.
+- Core pure; effects at boundaries.
+- Required pipeline shape: `parse -> validate -> normalize -> pure transform -> effect adapter -> canonical projection`.
+- Fail closed: broken invariants return typed client errors (`4xx`) or opaque server error (`internal_error`), never silent fallback synthesis.
+- Exactly-once-effective side effects only via `callIdempotentEffect(effect_key, ...)` (per-key serialization + advisory lock).
+- Durability mandatory: checkpointed steps, replay-safe recovery, crash-resume from last completed step.
+- Security boundaries mandatory: raw-path hostile handling, decode+allowlist IDs, resolve-under-root exports.
+- Perf budgets are correctness caps.
 
-## Coding Style (hard)
+## Artifact/Bundle Law (hard)
 
-- Pipeline shape: `parse -> validate -> normalize -> pure transform -> effect adapter -> canonical projection`.
-- Name things by domain + unit (`*_ms`, `workflow_id`, `effect_key`), never vague aliases.
-- Prefer small composable modules with explicit I/O; reject hidden global mutable state.
-- Use additive migrations, not big-bang rewrites; keep compatibility windows explicit+time-boxed.
-- Keep JSON outputs canonical/stable/newline-terminated; diff noise is a bug.
+- Artifact truth is persisted rows; export/bundle/detail/download are persisted-first readers.
+- Artifact table is append-only; UPDATE/DELETE forbidden by policy (supersede via new row).
+- Workflow success requires persisted artifacts (`FAILED_NO_ARTIFACT` on zero).
+- Provenance payload is IDs+hashes only; no raw source/content text.
+- Persisted blob consumers must read from `uri` and verify stored `sha256`; unreadable/mismatch => opaque `5xx`.
+- JSON artifact detail decode is strict; parse failure => opaque `5xx`.
+- Bundle transport is additive deterministic `/runs/:id/bundle` + `/runs/:id/bundle.zip` (byte-stable).
+- Bundle manifest time pins to run header `created_at` when present.
+- Default blob root is stable repo cache (`.cache/run-bundles`); cleanup-on-close is explicit opt-in, never default.
 
-## Product Contracts To Freeze
+## UI/Host Law (hard)
 
-- API: sprint2 additive surface is `/runs*` + `/artifacts*` + `/healthz`; `/runs*` removal blocked before 2026-06-30 and requires explicit migration proof; no `/api/*` resurrection.
-- Run payload: stable keys (`run_id,status,dbos_status,header,timeline`), export adds `artifacts` + `run_bundle_path`.
-- Run start body migration: legacy `{source}` and canonical `{intent,args}` may co-exist only in a time-boxed compat window; no silent default-source synthesis; compat exit requires explicit proof.
-- UI: fixed plane IDs + `#run-status[data-state]` FSM (`idle|running|done|error`); additive aliases `#conv/#artifacts/#exec` are wrappers only, never replacements.
-- Artifact vocabulary: `raw,docir,chunk-index,memo` (`chunk-index` only).
-- Run bundle: fixed v0 set + additive DBOS snapshots; normalized root/time for cross-machine diffs.
-- Workflow truth: DBOS tables (`dbos.workflow_status`, `dbos.operation_outputs`); projections must honor DBOS shape quirks.
+- Plane IDs are product API: `#conversation-plane`, `#execution-plane`, `#artifact-plane`.
+- Additive aliases `#conv/#exec/#artifacts` are wrappers only.
+- Run-status FSM is strict: `#run-status[data-state]=idle|running|done|error`; unknown backend status => terminal `error`.
+- API host (`/runs/:id`,`/artifacts/:id`) returns JSON truth; UI host returns HTML documents/fragments.
+- Non-HX or HX-history-restore on UI host must render full shell.
+- Poll truth path is `/ui/runs/:id/poll`; response carries OOB updates for `#exec,#artifacts,#run-status` atomically.
+- Resume control is explicit/fail-closed: show+allow only for `CANCELLED|RETRIES_EXCEEDED`.
+- UI startup mode is explicit: embedded API default; external split mode uses `UI_EMBED_API=0` with shared `API_PORT` proxy (no double-bind).
+- UI boundary parity: typed API errors pass through; no internal-string leaks; invalid/not-found run routes never mask as idle.
 
 ## Living-Spec Loop (mandatory per behavior delta)
 
 - Ship proof with change (test and/or golden and/or perf).
-- Update durable decisions in `spec-*/00-learnings.jsonl`.
-- Update execution ledger in `spec-*/01-tasks.jsonl` or active cycle tasks file (e.g. `spec-0/02-tasks.jsonl`, `spec-0/03-tasks.jsonl`).
-- Update operator recipe when UX/ops flow changes (`spec-*/02-tutorial.jsonl` when present).
-- New failure mode => new rule/recipe in `.codex/rules/*` in same change.
+- Append durable decision/constraint to `spec-*/00-learnings.jsonl`.
+- Append execution evidence to active tasks log (`spec-*/01-tasks.jsonl` or cycle file, e.g. `spec-0/03-tasks.jsonl`).
+- Update operator tutorial log when UX/ops flow changes (e.g. `spec-0/03-tutorial.jsonl`).
+- New failure mode => new/updated `.codex/rules/*` entry in same change.
 - Behavior-changing PR without proof+log updates is incomplete.
 
 ## Triage First Moves
 
 - PG unavailable: `mise run up && mise run reset`.
-- Stack unhealthy: `docker compose -f infra/compose/docker-compose.yml ps --format json | jq -s`; verify health + PG mount `/var/lib/postgresql`.
-- Replay/idempotency flake: check determinism freeze, checkpoint writes, effect-key composition/lock path.
-- Hostile path probe false negatives: use `curl --path-as-is` for encoded dot-segments.
-- Golden drift: verify structural intent; never blind re-record.
-- Sandbox hash drift: remove nondeterministic env/output/time leakage.
-- CI/local mismatch: rerun only `mise run ci`; delete shadow command graphs.
+- Stack health unclear: `docker compose -f infra/compose/docker-compose.yml ps --format json | jq -s` (verify PG mount `/var/lib/postgresql`).
+- Early boot probe noise: gate with `mise run wait:health -- <url>` before API/UI checks.
+- Replay/idempotency flake: audit freeze (`Date.now`,`Math.random`), checkpointing, effect-key composition/lock path.
+- Hostile-path false negatives: use `curl --path-as-is`.
+- Export anomaly triage: missing/tampered blob => expected opaque `5xx`; missing `prepare` source with persisted rows => export still `200`.
+- Golden drift: inspect structural intent; never blind re-record.
+- CI/local mismatch: rerun only `mise run ci`; remove shadow command graphs.
 
 ## Imported Scoped Rules
 

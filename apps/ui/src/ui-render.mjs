@@ -72,11 +72,24 @@ export function renderExecutionPane(run, filters, opts = {}) {
 }
 
 /**
+ * @param {string} execHtml
+ */
+export function withExecOob(execHtml) {
+  return execHtml.replace('<aside id="exec"', '<aside id="exec" hx-swap-oob="true"');
+}
+
+/**
  * @param {Array<unknown>} artifacts
  * @param {{type?: string, visibility?: string, q?: string, step?: number}} filters
+ * @param {{scope?: 'all'|'run', runId?: string}} [opts]
  */
-export function renderArtifactsPane(artifacts, filters = {}) {
+export function renderArtifactsPane(artifacts, filters = {}, opts = {}) {
   const query = queryForFilters(filters);
+  const scope = opts.scope ?? 'all';
+  const scopeBanner =
+    scope === 'run' && opts.runId
+      ? `<p class="artifact-scope">scope=run:${uiEsc.escapeHtml(opts.runId)} <a href="/artifacts${query}" hx-push-url="true">show all</a></p>`
+      : '';
   const items = artifacts
     .map((row) => artifactListItemModel(row))
     .map((artifact) => {
@@ -88,7 +101,7 @@ export function renderArtifactsPane(artifacts, filters = {}) {
       return `<li data-artifact-id="${uiEsc.escapeHtml(artifact.id)}"><a href="/artifacts/${encodeURIComponent(artifact.id)}${query}" hx-push-url="true">${uiEsc.escapeHtml(title)}</a><span> type=${uiEsc.escapeHtml(artifact.type)} run=<a href="/runs/${encodeURIComponent(artifact.run_id)}${stepSuffix}" hx-push-url="true">${uiEsc.escapeHtml(artifact.run_id)}</a> status=${uiEsc.escapeHtml(artifact.status)} time=${uiEsc.escapeHtml(prettyDate(artifact.created_at))} cost=${uiEsc.escapeHtml(cost)} source_count=${uiEsc.escapeHtml(sourceCount)}</span></li>`;
     })
     .join('');
-  return `<section id="artifact-plane" class="plane"><main id="artifacts"><h2>Artifacts</h2><form id="artifact-filters" hx-get="/artifacts" hx-target="#main" hx-push-url="true"><input name="type" placeholder="type" value="${uiEsc.escapeHtml(filters.type ?? '')}" /><input name="visibility" placeholder="visibility" value="${uiEsc.escapeHtml(filters.visibility ?? '')}" /><input name="q" placeholder="search title" value="${uiEsc.escapeHtml(filters.q ?? '')}" /><button type="submit">Filter</button></form><ul>${items}</ul></main></section>`;
+  return `<section id="artifact-plane" class="plane"><main id="artifacts"><h2>Artifacts</h2>${scopeBanner}<form id="artifact-filters" hx-get="/artifacts" hx-target="#main" hx-push-url="true"><input name="type" placeholder="type" value="${uiEsc.escapeHtml(filters.type ?? '')}" /><input name="visibility" placeholder="visibility" value="${uiEsc.escapeHtml(filters.visibility ?? '')}" /><input name="q" placeholder="search title" value="${uiEsc.escapeHtml(filters.q ?? '')}" /><button type="submit">Filter</button></form><ul>${items}</ul></main></section>`;
 }
 
 /**
@@ -147,5 +160,5 @@ export function renderPollFragment(panes) {
  * @param {{conv: string, exec: string, artifacts: string, statusText: string, statusState: string}} panes
  */
 export function renderCommandFragment(panes) {
-  return `${panes.conv}${panes.exec.replace('<aside id="exec"', '<aside id="exec" hx-swap-oob="true"')}${panes.artifacts.replace('<main id="artifacts"', '<main id="artifacts" hx-swap-oob="true"')}<p id="run-status" data-state="${uiEsc.escapeHtml(panes.statusState)}" hx-swap-oob="true">${uiEsc.escapeHtml(panes.statusText)}</p>`;
+  return `${panes.conv}${withExecOob(panes.exec)}${panes.artifacts.replace('<main id="artifacts"', '<main id="artifacts" hx-swap-oob="true"')}<p id="run-status" data-state="${uiEsc.escapeHtml(panes.statusState)}" hx-swap-oob="true">${uiEsc.escapeHtml(panes.statusText)}</p>`;
 }
