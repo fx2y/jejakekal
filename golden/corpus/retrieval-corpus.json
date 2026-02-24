@@ -1,0 +1,29 @@
+{
+  "id": "retrieval-corpus-v1",
+  "target": {
+    "docs": 100,
+    "queries": 1000
+  },
+  "seed": {
+    "docs": 2,
+    "queries": 4
+  },
+  "docs": [
+    {
+      "id": "golden-doc-a",
+      "path": "golden/corpus/doc-a.txt",
+      "topics": ["alpha", "beta", "gamma"]
+    },
+    {
+      "id": "golden-doc-b",
+      "path": "golden/corpus/doc-b.txt",
+      "topics": ["invoice", "line item", "widget", "total"]
+    }
+  ],
+  "query_classes": [
+    "lexical_exact",
+    "trgm_typo",
+    "table_exact",
+    "fusion_phrase"
+  ]
+}

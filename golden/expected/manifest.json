@@ -1,6 +1,15 @@
 {
-  "createdAt": "2026-02-24T05:22:53.400Z",
+  "createdAt": "2026-02-24T12:14:10.490Z",
   "locale": "C",
+  "retrieval": {
+    "candidate_count": 4,
+    "corpus_id": "retrieval-corpus-v1",
+    "corpus_seed_docs": 2,
+    "corpus_seed_queries": 4,
+    "corpus_target_docs": 100,
+    "corpus_target_queries": 1000,
+    "retrieval_events": 4
+  },
   "root": "golden/bundle",
   "schemaVersion": "run-bundle-v0",
   "timezone": "UTC",

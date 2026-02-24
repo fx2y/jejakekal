@@ -1,0 +1,100 @@
+{
+  "cases": [
+    {
+      "step": "retrieve-lexical",
+      "query": "alpha",
+      "candidates": [
+        {
+          "doc_id": "golden-doc-a",
+          "ver": 1,
+          "block_id": "block-a-001",
+          "rank": 10.5,
+          "rrf_score": 0.02,
+          "lane": ["lexical"],
+          "lane_reasons": [{ "lane": "lexical", "rank_pos": 1 }],
+          "cite": {
+            "doc_version": 1,
+            "page": 1,
+            "bbox": [0, 0, 1, 0.2],
+            "block_hash": "sha256:block-a-001",
+            "block_id": "block-a-001"
+          },
+          "text": "must be stripped"
+        }
+      ]
+    },
+    {
+      "step": "retrieve-trgm",
+      "query": "invocie",
+      "candidates": [
+        {
+          "doc_id": "golden-doc-b",
+          "ver": 1,
+          "block_id": "block-b-001",
+          "rank": 9.75,
+          "rrf_score": 0.019,
+          "lane": ["trgm"],
+          "lane_reasons": [{ "lane": "trgm", "rank_pos": 1, "match_kind": "shortfield" }],
+          "cite": {
+            "doc_version": 1,
+            "page": 1,
+            "bbox": [0, 0.2, 1, 0.4],
+            "block_hash": "sha256:block-b-001",
+            "block_id": "block-b-001"
+          },
+          "snippet": "must be stripped"
+        }
+      ]
+    },
+    {
+      "step": "retrieve-table",
+      "query": "total",
+      "candidates": [
+        {
+          "doc_id": "golden-doc-b",
+          "ver": 1,
+          "block_id": "block-b-table-001",
+          "rank": 9.5,
+          "rrf_score": 0.018,
+          "lane": ["table"],
+          "lane_reasons": [{ "lane": "table", "rank_pos": 1, "match_kind": "exact" }],
+          "cite": {
+            "doc_version": 1,
+            "page": 1,
+            "bbox": [0, 0.4, 1, 0.8],
+            "block_hash": "sha256:block-b-table-001",
+            "block_id": "block-b-table-001"
+          }
+        }
+      ]
+    },
+    {
+      "step": "retrieve-fusion",
+      "query": "\"invoice total\" widget",
+      "candidates": [
+        {
+          "doc_id": "golden-doc-b",
+          "ver": 1,
+          "block_id": "block-b-table-001",
+          "rank": 11.2,
+          "rrf_score": 0.03,
+          "lane": ["lexical", "table", "vector"],
+          "lane_reasons": [
+            { "lane": "lexical", "rank_pos": 1 },
+            { "lane": "table", "rank_pos": 1, "match_kind": "fts" },
+            { "lane": "vector", "rank_pos": 2, "distance": 0.12 }
+          ],
+          "cite": {
+            "doc_version": 1,
+            "page": 1,
+            "bbox": [0, 0.4, 1, 0.8],
+            "block_hash": "sha256:block-b-table-001",
+            "block_id": "block-b-table-001"
+          },
+          "text": "must be stripped",
+          "snippet": "must be stripped"
+        }
+      ]
+    }
+  ]
+}

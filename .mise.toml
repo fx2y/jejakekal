@@ -118,12 +118,12 @@ outputs = [".cache/test-sandbox-chaos.stamp"]
 
 [tasks."golden:record"]
 run = "bash mise-tasks/golden/record"
-sources = ["packages/**/*.mjs", "apps/**/*.mjs", "golden/corpus/*.txt"]
-outputs = ["golden/expected/manifest.json", "golden/expected/timeline.json", "golden/expected/artifacts.json", "golden/expected/citations.json"]
+sources = ["packages/**/*.mjs", "apps/**/*.mjs", "golden/corpus/*.txt", "golden/corpus/*.json"]
+outputs = ["golden/expected/manifest.json", "golden/expected/timeline.json", "golden/expected/artifacts.json", "golden/expected/citations.json", "golden/expected/retrieval_results.json"]
 
 [tasks."golden:diff"]
 run = "bash mise-tasks/golden/diff"
-sources = ["golden/expected/*.json", "packages/**/*.mjs", "apps/**/*.mjs"]
+sources = ["golden/expected/*.json", "golden/corpus/*.json", "packages/**/*.mjs", "apps/**/*.mjs"]
 outputs = [".cache/golden-diff.stamp"]
 
 [tasks."stack:up"]

@@ -9,3 +9,8 @@ test('perf budget checker flags only breaches', () => {
   );
   assert.deepEqual(failures, ['query_p95_ms:320>300']);
 });
+
+test('perf budget checker fails closed on missing keys', () => {
+  const failures = checkBudgets({ retr_fuse_p95_ms: 150 }, {});
+  assert.deepEqual(failures, ['retr_fuse_p95_ms:missing']);
+});

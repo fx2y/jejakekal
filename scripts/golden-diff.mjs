@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { ingestDocument } from '../packages/pipeline/src/ingest.mjs';
 import { diffRunBundles, makeManifest, writeRunBundle } from '../packages/core/src/run-bundle.mjs';
+import { loadGoldenRetrievalSidecars } from './golden-retrieval-fixture.mjs';
 
 async function main() {
   const source = await readFile('golden/corpus/doc-a.txt', 'utf8');
@@ -9,10 +10,15 @@ async function main() {
     source,
     outDir: 'golden/generated'
   });
+  const retrieval = await loadGoldenRetrievalSidecars();
 
   await mkdir('golden/actual', { recursive: true });
   await writeRunBundle('golden/actual', {
-    manifest: makeManifest({ workflowId: 'golden-workflow', root: 'golden/bundle' }),
+    manifest: makeManifest({
+      workflowId: 'golden-workflow',
+      root: 'golden/bundle',
+      retrieval: retrieval?.manifestSummary
+    }),
     timeline: [
       { step: 'ingest', phase: 'completed', payload: { docId: 'golden-doc-a' } },
       { step: 'index', phase: 'completed', payload: { chunks: ingest.chunks.length } }
@@ -24,7 +30,10 @@ async function main() {
       { id: 'chunk-index', path: ingest.paths.chunkIndex },
       { id: 'memo', path: ingest.paths.memo }
     ],
-    citations: [{ source: 'golden/corpus/doc-a.txt', confidence: 1 }]
+    citations: [{ source: 'golden/corpus/doc-a.txt', confidence: 1 }],
+    extraJsonFiles: {
+      ...(retrieval ? { 'retrieval_results.json': retrieval.retrievalResults } : {})
+    }
   });
 
   const diffs = await diffRunBundles('golden/expected', 'golden/actual');

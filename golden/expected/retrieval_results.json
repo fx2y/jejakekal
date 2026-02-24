@@ -1,0 +1,154 @@
+{
+  "retrieval": [
+    {
+      "candidates": [
+        {
+          "block_id": "block-a-001",
+          "cite": {
+            "bbox": [
+              0,
+              0,
+              1,
+              0.2
+            ],
+            "block_hash": "sha256:block-a-001",
+            "block_id": "block-a-001",
+            "doc_version": 1,
+            "page": 1
+          },
+          "doc_id": "golden-doc-a",
+          "lane": [
+            "lexical"
+          ],
+          "lane_reasons": [
+            {
+              "lane": "lexical",
+              "rank_pos": 1
+            }
+          ],
+          "rank": 10.5,
+          "rrf_score": 0.02,
+          "ver": 1
+        }
+      ],
+      "query": "alpha",
+      "step": "retrieve-lexical"
+    },
+    {
+      "candidates": [
+        {
+          "block_id": "block-b-001",
+          "cite": {
+            "bbox": [
+              0,
+              0.2,
+              1,
+              0.4
+            ],
+            "block_hash": "sha256:block-b-001",
+            "block_id": "block-b-001",
+            "doc_version": 1,
+            "page": 1
+          },
+          "doc_id": "golden-doc-b",
+          "lane": [
+            "trgm"
+          ],
+          "lane_reasons": [
+            {
+              "lane": "trgm",
+              "match_kind": "shortfield",
+              "rank_pos": 1
+            }
+          ],
+          "rank": 9.75,
+          "rrf_score": 0.019,
+          "ver": 1
+        }
+      ],
+      "query": "invocie",
+      "step": "retrieve-trgm"
+    },
+    {
+      "candidates": [
+        {
+          "block_id": "block-b-table-001",
+          "cite": {
+            "bbox": [
+              0,
+              0.4,
+              1,
+              0.8
+            ],
+            "block_hash": "sha256:block-b-table-001",
+            "block_id": "block-b-table-001",
+            "doc_version": 1,
+            "page": 1
+          },
+          "doc_id": "golden-doc-b",
+          "lane": [
+            "table"
+          ],
+          "lane_reasons": [
+            {
+              "lane": "table",
+              "match_kind": "exact",
+              "rank_pos": 1
+            }
+          ],
+          "rank": 9.5,
+          "rrf_score": 0.018,
+          "ver": 1
+        }
+      ],
+      "query": "total",
+      "step": "retrieve-table"
+    },
+    {
+      "candidates": [
+        {
+          "block_id": "block-b-table-001",
+          "cite": {
+            "bbox": [
+              0,
+              0.4,
+              1,
+              0.8
+            ],
+            "block_hash": "sha256:block-b-table-001",
+            "block_id": "block-b-table-001",
+            "doc_version": 1,
+            "page": 1
+          },
+          "doc_id": "golden-doc-b",
+          "lane": [
+            "lexical",
+            "table",
+            "vector"
+          ],
+          "lane_reasons": [
+            {
+              "lane": "lexical",
+              "rank_pos": 1
+            },
+            {
+              "lane": "table",
+              "match_kind": "fts",
+              "rank_pos": 1
+            },
+            {
+              "distance": 0.12,
+              "lane": "vector",
+              "rank_pos": 2
+            }
+          ],
+          "rank": 11.2,
+          "rrf_score": 0.03,
+          "ver": 1
+        }
+      ],
+      "query": "\"invoice total\" widget",
+      "step": "retrieve-fusion"
+    }
+  ]
+}
