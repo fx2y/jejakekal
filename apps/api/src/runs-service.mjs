@@ -15,6 +15,7 @@ import {
   resolveCompatToday,
   resolveSourceCompatUntil
 } from './source-compat.mjs';
+import { resolveOcrPolicy } from './ocr/config.mjs';
 
 const SOURCE_INTENT_SET = new Set(SOURCE_INTENTS);
 
@@ -128,10 +129,11 @@ function toWorkflowInput(command) {
 
 /**
  * @param {import('pg').Client} client
- * @param {{intent:string, args:Record<string, unknown>, workflowId?: string, sleepMs?: number, useLlm?: boolean, bundlesRoot?: string}} params
+ * @param {{intent:string, args:Record<string, unknown>, workflowId?: string, sleepMs?: number, useLlm?: boolean, bundlesRoot?: string, ocrPolicy?: Record<string, unknown>}} params
  */
 export async function startRunDurably(client, params) {
   const workflowInput = toWorkflowInput(params);
+  const ocrPolicy = params.ocrPolicy ?? resolveOcrPolicy(process.env);
   if (params.workflowId) {
     assertValidRunId(params.workflowId, 'workflowId');
     await ensureWorkflowIdPayloadMatch(client, params.workflowId, makeInputHash(params));
@@ -141,7 +143,8 @@ export async function startRunDurably(client, params) {
     value: workflowInput.value,
     sleepMs: params.sleepMs,
     useLlm: params.useLlm,
-    bundlesRoot: params.bundlesRoot
+    bundlesRoot: params.bundlesRoot,
+    ocrPolicy
   });
   return { handle, runId: handle.workflowID };
 }

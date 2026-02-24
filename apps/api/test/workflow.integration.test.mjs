@@ -70,6 +70,18 @@ async function waitForRunTerminal(baseUrl, runId, attempts = 80, delayMs = 25) {
   return run;
 }
 
+const BASELINE_TEXT_LANE_STEPS = Object.freeze([
+  '0:reserve-doc',
+  '1:store-raw',
+  '2:DBOS.sleep',
+  '3:marker-convert',
+  '4:store-parse-outputs',
+  '5:normalize-docir',
+  '6:index-fts',
+  '7:emit-exec-memo',
+  '8:artifact-count'
+]);
+
 test('C1 smoke: DBOS run writes dbos.workflow_status + dbos.operation_outputs', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
@@ -273,6 +285,27 @@ test('C2 canonical /runs is durable-start async and GET /runs/:id projects order
   assert.equal(docRows.rows[0].latest_ver, 1);
   assert.equal(docRows.rows[0].ver, 1);
   assert.equal(typeof docRows.rows[0].doc_id, 'string');
+});
+
+test('C0 contract freeze: baseline text lane function_id -> step mapping is unchanged', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'c0-step-id-freeze', sleepMs: 10 })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run.status, 'done');
+  const lane = run.timeline.map((row) => `${row.function_id}:${row.function_name}`);
+  assert.deepEqual(lane, BASELINE_TEXT_LANE_STEPS);
 });
 
 test('C2 payload guards: no default source fallback and invalid command typed 400', async (t) => {

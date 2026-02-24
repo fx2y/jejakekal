@@ -89,6 +89,63 @@ CREATE TABLE IF NOT EXISTS block (
 
 CREATE INDEX IF NOT EXISTS block_tsv_gin ON block USING GIN (tsv);
 
+CREATE TABLE IF NOT EXISTS ocr_job (
+  job_id TEXT PRIMARY KEY,
+  doc_id TEXT NOT NULL,
+  ver INTEGER NOT NULL CHECK (ver >= 1),
+  gate_rev TEXT NOT NULL,
+  policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (doc_id, ver) REFERENCES doc_ver (doc_id, ver) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ocr_job_doc_ver_idx ON ocr_job (doc_id, ver, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ocr_page (
+  job_id TEXT NOT NULL REFERENCES ocr_job (job_id) ON DELETE CASCADE,
+  page_idx INTEGER NOT NULL CHECK (page_idx >= 0),
+  status TEXT NOT NULL,
+  gate_score NUMERIC,
+  gate_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+  png_uri TEXT,
+  png_sha TEXT CHECK (png_sha ~ '^[a-f0-9]{64}$'),
+  raw_uri TEXT,
+  raw_sha TEXT CHECK (raw_sha ~ '^[a-f0-9]{64}$'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (job_id, page_idx)
+);
+
+CREATE INDEX IF NOT EXISTS ocr_page_status_idx ON ocr_page (status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ocr_patch (
+  doc_id TEXT NOT NULL,
+  ver INTEGER NOT NULL CHECK (ver >= 1),
+  page_idx INTEGER NOT NULL CHECK (page_idx >= 0),
+  patch_sha TEXT NOT NULL CHECK (patch_sha ~ '^[a-f0-9]{64}$'),
+  patch JSONB NOT NULL,
+  source_job_id TEXT REFERENCES ocr_job (job_id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (doc_id, ver, page_idx, patch_sha),
+  FOREIGN KEY (doc_id, ver) REFERENCES doc_ver (doc_id, ver) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ocr_patch_doc_ver_idx ON ocr_patch (doc_id, ver, page_idx, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS docir_page_version (
+  doc_id TEXT NOT NULL,
+  ver INTEGER NOT NULL CHECK (ver >= 1),
+  page_idx INTEGER NOT NULL CHECK (page_idx >= 0),
+  page_sha TEXT NOT NULL CHECK (page_sha ~ '^[a-f0-9]{64}$'),
+  source TEXT NOT NULL,
+  source_ref_sha TEXT CHECK (source_ref_sha ~ '^[a-f0-9]{64}$'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (doc_id, ver, page_idx, page_sha),
+  FOREIGN KEY (doc_id, ver) REFERENCES doc_ver (doc_id, ver) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS docir_page_version_doc_ver_idx
+  ON docir_page_version (doc_id, ver, page_idx, created_at DESC);
+
 CREATE OR REPLACE FUNCTION deny_artifact_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'artifact_immutable';

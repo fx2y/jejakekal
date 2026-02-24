@@ -1,6 +1,6 @@
 # ADR-004: Sprint3 Ingest Constitution (C0-C7)
 
-Status: Accepted (2026-02-23)  
+Status: Accepted (2026-02-23)
 Scope: `spec-0/00-learnings.jsonl`, `spec-0/04-htn.jsonl`, `spec-0/04/*.jsonl`, `spec-0/04-tasks.jsonl`, `spec-0/04-tutorial.jsonl`
 
 ## 1. Decision (hard law)

@@ -5,7 +5,6 @@ import { normalizeMarkerToBlocks } from '../../../packages/pipeline/src/docir/no
 import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { makeClient } from './db.mjs';
 import { resolveWithinRoot } from './artifact-uri.mjs';
-import { defaultBundlesRootPath } from './bundles-root.mjs';
 import { buildArtifactProvenance } from './artifacts/provenance.mjs';
 import { countArtifactsByRunId, insertArtifact } from './artifacts/repository.mjs';
 import {
@@ -21,9 +20,12 @@ import { buildExecMemoMarkdown } from './ingest/exec-memo.mjs';
 import { listBlocksByDocVersion, populateBlockTsv, upsertBlockLedger } from './search/block-repository.mjs';
 import { callIdempotentEffect } from './effects.mjs';
 import { buildIngestEffectKey } from './ingest/effect-key.mjs';
+import { defaultBundlesRootPath } from './bundles-root.mjs';
+import { resolveOcrPolicy } from './ocr/config.mjs';
+import { runDefaultTextLane } from './workflows/default-text-lane.mjs';
 
 let workflowsRegistered = false;
-/** @type {((input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, pauseAfterS4Ms?: number }) => Promise<unknown>) | undefined} */
+/** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>) | undefined} */
 let defaultWorkflowFn;
 /** @type {((input: { failUntilAttempt?: number }) => Promise<unknown>) | undefined} */
 let flakyRetryWorkflowFn;
@@ -614,6 +616,17 @@ function normalizeOptionalPauseMs(value) {
 }
 
 /**
+ * @param {string | undefined} bundlesRoot
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+function resolveWorkflowBundlesRoot(bundlesRoot, env = process.env) {
+  if (typeof bundlesRoot === 'string' && bundlesRoot.length > 0) {
+    return bundlesRoot;
+  }
+  return env.JEJAKEKAL_BUNDLES_ROOT ?? defaultBundlesRootPath();
+}
+
+/**
  * @param {number | undefined} pauseAfterS4Ms
  */
 async function runS4ToS5Pause(pauseAfterS4Ms) {
@@ -623,67 +636,21 @@ async function runS4ToS5Pause(pauseAfterS4Ms) {
 }
 
 async function defaultWorkflowImpl(input) {
-  const reserved = await runS0ReserveDoc(input);
-  const workflowId = DBOS.workflowID ?? 'unknown-workflow';
-  await runS1StoreRaw({
-    workflowId,
-    source: input.value,
-    rawSha: reserved.raw_sha,
-    docId: reserved.doc_id,
-    version: reserved.ver
+  return runDefaultTextLane(input, {
+    workflowId: DBOS.workflowID ?? 'unknown-workflow',
+    readTextFile: readFile,
+    runS0ReserveDoc,
+    runS1StoreRaw,
+    runS1Sleep,
+    runS2MarkerConvert,
+    runS3StoreParseOutputs,
+    runS4NormalizeDocir,
+    runS4ToS5Pause,
+    runS5IndexFts,
+    runS6EmitExecMemo,
+    runS7ArtifactCount,
+    runS8ArtifactPostcondition
   });
-  await runS1Sleep(input);
-  const bundlesRoot =
-    typeof input.bundlesRoot === 'string' && input.bundlesRoot.length > 0
-      ? input.bundlesRoot
-      : process.env.JEJAKEKAL_BUNDLES_ROOT ?? defaultBundlesRootPath();
-  const marker = await runS2MarkerConvert({
-    workflowId,
-    source: input.value,
-    docId: reserved.doc_id,
-    version: reserved.ver,
-    bundlesRoot,
-    useLlm: input.useLlm
-  });
-  const markerJson = JSON.parse(await readFile(marker.paths.docir, 'utf8'));
-  const persisted = await runS3StoreParseOutputs({
-    workflowId,
-    rawSha: reserved.raw_sha,
-    docId: reserved.doc_id,
-    version: reserved.ver,
-    markerConfigSha: reserved.marker_config_sha,
-    parsed: marker
-  });
-  const normalized = await runS4NormalizeDocir({
-    docId: reserved.doc_id,
-    version: reserved.ver,
-    rawSha: reserved.raw_sha,
-    markerConfigSha: reserved.marker_config_sha,
-    markerJson,
-    marker: {
-      version: marker.marker?.version,
-      stdout_sha256: marker.marker?.stdout_sha256,
-      stderr_sha256: marker.marker?.stderr_sha256
-    },
-    parseKeys: persisted.parse_keys,
-    parseShaByKey: persisted.parse_sha_by_key
-  });
-  await runS4ToS5Pause(input.pauseAfterS4Ms);
-  await runS5IndexFts({
-    workflowId,
-    docId: reserved.doc_id,
-    version: reserved.ver
-  });
-  const memo = await runS6EmitExecMemo({
-    workflowId,
-    docId: reserved.doc_id,
-    version: reserved.ver,
-    rawSha: reserved.raw_sha,
-    markerConfigSha: reserved.marker_config_sha
-  });
-  const artifactCount = await runS7ArtifactCount(workflowId);
-  runS8ArtifactPostcondition(artifactCount);
-  return { workflowId, reserved, marker, persisted, normalized, memo };
 }
 
 async function flakyRetryWorkflowImpl(input) {
@@ -728,21 +695,24 @@ export function registerDbosWorkflows() {
 }
 
 /**
- * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean}} params
+ * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, ocrPolicy?: Record<string, unknown>}} params
  */
 export async function startDefaultWorkflowRun(params) {
   registerDbosWorkflows();
   const workflowFn =
-    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, pauseAfterS4Ms?: number }) => Promise<unknown>} */ (
+    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>} */ (
       defaultWorkflowFn
     );
   const pauseAfterS4Ms = normalizeOptionalPauseMs(process.env.JEJAKEKAL_PAUSE_AFTER_S4_MS);
+  const bundlesRoot = resolveWorkflowBundlesRoot(params.bundlesRoot);
+  const ocrPolicy = params.ocrPolicy ?? resolveOcrPolicy(process.env);
   return startWorkflowWithConflictRecovery(workflowFn, params, {
     value: params.value,
     sleepMs: params.sleepMs,
-    bundlesRoot: params.bundlesRoot,
+    bundlesRoot,
     useLlm: params.useLlm,
-    pauseAfterS4Ms
+    pauseAfterS4Ms,
+    ocrPolicy
   });
 }
 
