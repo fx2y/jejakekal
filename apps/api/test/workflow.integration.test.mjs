@@ -1111,11 +1111,19 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
     `SELECT
        to_regclass('public.block_tsv_gin') AS block_idx,
        to_regclass('public.doc_block_fts_gin') AS doc_block_idx,
-       to_regclass('public.table_cell_vec_gin') AS table_cell_idx`
+       to_regclass('public.table_cell_vec_gin') AS table_cell_idx,
+       to_regclass('public.doc_block_title_trgm_gin') AS doc_block_title_trgm_idx,
+       to_regclass('public.doc_block_entity_trgm_gin') AS doc_block_entity_trgm_idx,
+       to_regclass('public.doc_block_key_trgm_gin') AS doc_block_key_trgm_idx,
+       to_regclass('public.table_cell_key_trgm_gin') AS table_cell_key_trgm_idx`
   );
   assert.equal(indexRes.rows[0].block_idx, 'block_tsv_gin');
   assert.equal(indexRes.rows[0].doc_block_idx, 'doc_block_fts_gin');
   assert.equal(indexRes.rows[0].table_cell_idx, 'table_cell_vec_gin');
+  assert.equal(indexRes.rows[0].doc_block_title_trgm_idx, 'doc_block_title_trgm_gin');
+  assert.equal(indexRes.rows[0].doc_block_entity_trgm_idx, 'doc_block_entity_trgm_gin');
+  assert.equal(indexRes.rows[0].doc_block_key_trgm_idx, 'doc_block_key_trgm_gin');
+  assert.equal(indexRes.rows[0].table_cell_key_trgm_idx, 'table_cell_key_trgm_gin');
 
   const blockRows = await client.query(
     `SELECT doc_id, ver, block_id, block_sha, tsv
@@ -1255,6 +1263,73 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
   });
   assert.equal(typeof snippet, 'string');
   assert.equal(String(snippet).includes('<mark>'), true);
+
+  const trgmHitsA = await queryRankedBlocksByTsQuery(client, {
+    query: 'invocie',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
+  const trgmHitsB = await queryRankedBlocksByTsQuery(client, {
+    query: 'invocie',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
+  assert.equal(trgmHitsA.length >= 1, true);
+  assert.deepEqual(
+    trgmHitsA.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`),
+    trgmHitsB.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`)
+  );
+
+  const movedBlock = trgmHitsA[0];
+  await client.query(
+    `UPDATE doc_block
+     SET ns = 'tenant-a'
+     WHERE doc_id = $1
+       AND ver = $2
+       AND block_id = $3`,
+    [movedBlock.doc_id, movedBlock.ver, movedBlock.block_id]
+  );
+  const isolatedHits = await queryRankedBlocksByTsQuery(client, {
+    query: 'invocie',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
+  assert.equal(
+    isolatedHits.some(
+      (row) => row.doc_id === movedBlock.doc_id && row.ver === movedBlock.ver && row.block_id === movedBlock.block_id
+    ),
+    false
+  );
+
+  await client.query('SET enable_seqscan = off');
+  const explainResult = await client.query(
+    `EXPLAIN (FORMAT JSON)
+     SELECT b.id
+     FROM doc_block b
+     WHERE b.ns = ANY($2::text[])
+       AND (
+         (b.title_norm IS NOT NULL AND b.title_norm % $1)
+         OR (b.entity_norm IS NOT NULL AND b.entity_norm % $1)
+         OR (b.key_norm IS NOT NULL AND b.key_norm % $1)
+       )
+     ORDER BY b.id ASC
+     LIMIT 20`,
+    ['invocie', ['default']]
+  );
+  await client.query('RESET enable_seqscan');
+  const explainJson = explainResult.rows[0]?.['QUERY PLAN']?.[0];
+  const explainText = JSON.stringify(explainJson);
+  const hasIndexScanNode =
+    explainText.includes('"Node Type":"Bitmap Index Scan"') ||
+    explainText.includes('"Node Type":"Index Scan"') ||
+    explainText.includes('"Node Type":"Index Only Scan"');
+  assert.equal(
+    explainText.includes('doc_block_title_trgm_gin') ||
+      explainText.includes('doc_block_entity_trgm_gin') ||
+      explainText.includes('doc_block_key_trgm_gin') ||
+      hasIndexScanNode,
+    true
+  );
 });
 
 test('P0 malformed JSON on POST /runs returns 400 invalid_json', async (t) => {

@@ -104,6 +104,9 @@ CREATE TABLE IF NOT EXISTS doc_block (
   type TEXT NOT NULL,
   text TEXT,
   data JSONB,
+  title_norm TEXT,
+  entity_norm TEXT,
+  key_norm TEXT,
   page INTEGER NOT NULL CHECK (page >= 1),
   bbox JSONB,
   block_sha TEXT NOT NULL,
@@ -113,8 +116,15 @@ CREATE TABLE IF NOT EXISTS doc_block (
   FOREIGN KEY (doc_id, ver) REFERENCES doc_ver (doc_id, ver) ON DELETE CASCADE
 );
 
+ALTER TABLE doc_block ADD COLUMN IF NOT EXISTS title_norm TEXT;
+ALTER TABLE doc_block ADD COLUMN IF NOT EXISTS entity_norm TEXT;
+ALTER TABLE doc_block ADD COLUMN IF NOT EXISTS key_norm TEXT;
+
 CREATE INDEX IF NOT EXISTS doc_block_doc_ver_idx ON doc_block (doc_id, ver, page, block_id);
 CREATE INDEX IF NOT EXISTS doc_block_ns_idx ON doc_block (ns, doc_id, ver);
+CREATE INDEX IF NOT EXISTS doc_block_title_trgm_gin ON doc_block USING GIN (title_norm gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS doc_block_entity_trgm_gin ON doc_block USING GIN (entity_norm gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS doc_block_key_trgm_gin ON doc_block USING GIN (key_norm gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS doc_block_fts (
   block_pk BIGINT PRIMARY KEY REFERENCES doc_block (id) ON DELETE CASCADE,
@@ -159,6 +169,7 @@ CREATE TABLE IF NOT EXISTS table_cell (
 
 CREATE INDEX IF NOT EXISTS table_cell_doc_ver_idx ON table_cell (doc_id, ver, page, table_id, row_idx, col_idx);
 CREATE INDEX IF NOT EXISTS table_cell_vec_gin ON table_cell USING GIN (vec);
+CREATE INDEX IF NOT EXISTS table_cell_key_trgm_gin ON table_cell USING GIN (key_norm gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS ocr_job (
   job_id TEXT PRIMARY KEY,

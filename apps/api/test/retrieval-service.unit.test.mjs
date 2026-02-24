@@ -14,7 +14,8 @@ test('retrieval scope: namespaces are mandatory and canonicalized', () => {
 
 test('retrieval service: rejects unsupported multi-tenant scope until schema lane lands', async () => {
   const service = createRetrievalService({
-    queryLexicalLaneRows: async () => []
+    queryLexicalLaneRows: async () => [],
+    queryTrgmLaneRows: async () => []
   });
   await assert.rejects(
     () =>
@@ -33,6 +34,7 @@ test('retrieval service: rejects unsupported multi-tenant scope until schema lan
 
 test('retrieval service: lexical lane output is deterministic by rank then id', async () => {
   const service = createRetrievalService({
+    queryTrgmLaneRows: async () => [],
     queryLexicalLaneRows: async () => [
       { doc_id: 'doc-a', ver: 1, block_id: 'b2', rank: 0.8 },
       { doc_id: 'doc-a', ver: 1, block_id: 'b1', rank: 0.8 },
@@ -56,6 +58,7 @@ test('retrieval service: lexical plan forwards canonical scope to repository ada
   /** @type {Array<any>} */
   const calls = [];
   const service = createRetrievalService({
+    queryTrgmLaneRows: async () => [],
     queryLexicalLaneRows: async (_client, plan) => {
       calls.push(plan);
       return [{ doc_id: 'doc-a', ver: 1, block_id: 'b1', rank: 1 }];
@@ -70,4 +73,19 @@ test('retrieval service: lexical plan forwards canonical scope to repository ada
   );
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].scope, { namespaces: ['default'] });
+});
+
+test('retrieval service: trgm lane can return typo hits when lexical misses', async () => {
+  const service = createRetrievalService({
+    queryLexicalLaneRows: async () => [],
+    queryTrgmLaneRows: async () => [{ doc_id: 'doc-a', ver: 1, block_id: 'b1', rank: 0.61 }]
+  });
+  const rows = await service.queryRankedBlocksByTsQuery(
+    /** @type {import('pg').Client} */ ({}),
+    {
+      query: 'invocie',
+      scope: { namespaces: ['default'] }
+    }
+  );
+  assert.deepEqual(rows, [{ doc_id: 'doc-a', ver: 1, block_id: 'b1', rank: 0.61 }]);
 });

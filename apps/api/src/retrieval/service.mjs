@@ -1,4 +1,4 @@
-import { queryLexicalLaneRows } from '../search/block-repository.mjs';
+import { queryLexicalLaneRows, queryTrgmLaneRows } from '../search/block-repository.mjs';
 import { RETRIEVAL_K_BUDGET } from './contracts.mjs';
 import { fuseByReciprocalRank } from './fusion.mjs';
 import { buildLexicalLanePlan } from './lanes/lexical.mjs';
@@ -37,12 +37,12 @@ function mapLexicalByBlock(rows) {
 }
 
 /**
- * @param {{queryLexicalLaneRows: typeof queryLexicalLaneRows}} deps
+ * @param {{queryLexicalLaneRows: typeof queryLexicalLaneRows, queryTrgmLaneRows: typeof queryTrgmLaneRows}} deps
  */
 export function createRetrievalService(deps) {
   /**
    * @param {import('pg').Client} client
-   * @param {{query: unknown, language?: unknown, limit?: unknown, scope: unknown}} params
+   * @param {{query: unknown, language?: unknown, limit?: unknown, trgmThreshold?: unknown, scope: unknown}} params
    */
   async function queryRankedBlocksByTsQuery(client, params) {
     const scope = normalizeRetrievalScope(params.scope);
@@ -53,27 +53,49 @@ export function createRetrievalService(deps) {
       limit: params.limit,
       scope
     });
-    buildTrgmLanePlan(params);
+    const trgmPlan = buildTrgmLanePlan({
+      query: params.query,
+      limit: params.limit,
+      scope,
+      trgmThreshold: params.trgmThreshold
+    });
     buildVectorLanePlan(params);
     buildTableLanePlan(params);
-    if (!lexicalPlan) {
+    if (!lexicalPlan && !trgmPlan) {
       return [];
     }
-    const lexicalRows = sortLexicalRows(await deps.queryLexicalLaneRows(client, lexicalPlan));
+    const [lexicalRowsRaw, trgmRowsRaw] = await Promise.all([
+      lexicalPlan ? deps.queryLexicalLaneRows(client, lexicalPlan) : Promise.resolve([]),
+      trgmPlan ? deps.queryTrgmLaneRows(client, trgmPlan) : Promise.resolve([])
+    ]);
+    const lexicalRows = sortLexicalRows(lexicalRowsRaw);
+    const trgmRows = sortLexicalRows(trgmRowsRaw);
+    const laneResults = [];
+    if (lexicalRows.length > 0) {
+      laneResults.push({ lane: 'lexical', rows: lexicalRows });
+    }
+    if (trgmRows.length > 0) {
+      laneResults.push({ lane: 'trgm', rows: trgmRows });
+    }
+    if (laneResults.length < 1) {
+      return [];
+    }
     const fused = fuseByReciprocalRank({
-      laneResults: [{ lane: 'lexical', rows: lexicalRows }],
+      laneResults,
       kRRF: RETRIEVAL_K_BUDGET.kRRF,
-      limit: lexicalPlan.limit
+      limit: lexicalPlan?.limit ?? trgmPlan?.limit
     });
     const lexicalByBlock = mapLexicalByBlock(lexicalRows);
+    const trgmByBlock = mapLexicalByBlock(trgmRows);
     return fused.map((row) => {
       const key = `${row.doc_id}:${row.ver}:${row.block_id}`;
       const lexical = lexicalByBlock.get(key);
+      const trgm = trgmByBlock.get(key);
       return {
         doc_id: row.doc_id,
         ver: row.ver,
         block_id: row.block_id,
-        rank: lexical ? lexical.rank : row.score
+        rank: lexical ? lexical.rank : trgm ? trgm.rank : row.score
       };
     });
   }
@@ -83,6 +105,6 @@ export function createRetrievalService(deps) {
   };
 }
 
-const retrievalService = createRetrievalService({ queryLexicalLaneRows });
+const retrievalService = createRetrievalService({ queryLexicalLaneRows, queryTrgmLaneRows });
 
 export const queryRankedBlocksByTsQuery = retrievalService.queryRankedBlocksByTsQuery;

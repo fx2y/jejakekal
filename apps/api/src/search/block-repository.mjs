@@ -166,7 +166,7 @@ async function syncRetrievalProjection(client, params) {
 
   await client.query(
     pageScoped
-      ? `INSERT INTO doc_block (doc_id, ver, block_id, ns, acl, type, text, data, page, bbox, block_sha)
+      ? `INSERT INTO doc_block (doc_id, ver, block_id, ns, acl, type, text, data, title_norm, entity_norm, key_norm, page, bbox, block_sha)
          SELECT b.doc_id,
                 b.ver,
                 b.block_id,
@@ -175,6 +175,23 @@ async function syncRetrievalProjection(client, params) {
                 b.type,
                 b.text,
                 b.data,
+                NULLIF(BTRIM(REGEXP_REPLACE(LOWER(UNACCENT(COALESCE(b.data->>'title', b.data->>'header', b.data->>'heading', ''))), '\\s+', ' ', 'g')), ''),
+                NULLIF(BTRIM(REGEXP_REPLACE(LOWER(UNACCENT(COALESCE(b.data->>'entity', b.data->>'name', ''))), '\\s+', ' ', 'g')), ''),
+                NULLIF(
+                  SPLIT_PART(
+                    BTRIM(
+                      REGEXP_REPLACE(
+                        LOWER(UNACCENT(COALESCE(b.data->>'key', b.data->>'keyword', b.text, ''))),
+                        '\\s+',
+                        ' ',
+                        'g'
+                      )
+                    ),
+                    ' ',
+                    1
+                  ),
+                  ''
+                ),
                 b.page,
                 b.bbox,
                 b.block_sha
@@ -184,13 +201,16 @@ async function syncRetrievalProjection(client, params) {
            AND b.page = ANY($3::int[])
          ON CONFLICT (doc_id, ver, block_id) DO UPDATE
          SET type = EXCLUDED.type,
-             text = EXCLUDED.text,
-             data = EXCLUDED.data,
-             page = EXCLUDED.page,
-             bbox = EXCLUDED.bbox,
-             block_sha = EXCLUDED.block_sha,
-             updated_at = NOW()`
-      : `INSERT INTO doc_block (doc_id, ver, block_id, ns, acl, type, text, data, page, bbox, block_sha)
+              text = EXCLUDED.text,
+              data = EXCLUDED.data,
+              title_norm = EXCLUDED.title_norm,
+              entity_norm = EXCLUDED.entity_norm,
+              key_norm = EXCLUDED.key_norm,
+              page = EXCLUDED.page,
+              bbox = EXCLUDED.bbox,
+              block_sha = EXCLUDED.block_sha,
+              updated_at = NOW()`
+      : `INSERT INTO doc_block (doc_id, ver, block_id, ns, acl, type, text, data, title_norm, entity_norm, key_norm, page, bbox, block_sha)
          SELECT b.doc_id,
                 b.ver,
                 b.block_id,
@@ -199,6 +219,23 @@ async function syncRetrievalProjection(client, params) {
                 b.type,
                 b.text,
                 b.data,
+                NULLIF(BTRIM(REGEXP_REPLACE(LOWER(UNACCENT(COALESCE(b.data->>'title', b.data->>'header', b.data->>'heading', ''))), '\\s+', ' ', 'g')), ''),
+                NULLIF(BTRIM(REGEXP_REPLACE(LOWER(UNACCENT(COALESCE(b.data->>'entity', b.data->>'name', ''))), '\\s+', ' ', 'g')), ''),
+                NULLIF(
+                  SPLIT_PART(
+                    BTRIM(
+                      REGEXP_REPLACE(
+                        LOWER(UNACCENT(COALESCE(b.data->>'key', b.data->>'keyword', b.text, ''))),
+                        '\\s+',
+                        ' ',
+                        'g'
+                      )
+                    ),
+                    ' ',
+                    1
+                  ),
+                  ''
+                ),
                 b.page,
                 b.bbox,
                 b.block_sha
@@ -207,12 +244,15 @@ async function syncRetrievalProjection(client, params) {
            AND b.ver = $2
          ON CONFLICT (doc_id, ver, block_id) DO UPDATE
          SET type = EXCLUDED.type,
-             text = EXCLUDED.text,
-             data = EXCLUDED.data,
-             page = EXCLUDED.page,
-             bbox = EXCLUDED.bbox,
-             block_sha = EXCLUDED.block_sha,
-             updated_at = NOW()`,
+              text = EXCLUDED.text,
+              data = EXCLUDED.data,
+              title_norm = EXCLUDED.title_norm,
+              entity_norm = EXCLUDED.entity_norm,
+              key_norm = EXCLUDED.key_norm,
+              page = EXCLUDED.page,
+              bbox = EXCLUDED.bbox,
+              block_sha = EXCLUDED.block_sha,
+              updated_at = NOW()`,
     pageScoped ? [params.docId, params.version, pages, DEFAULT_NAMESPACE] : [params.docId, params.version, DEFAULT_NAMESPACE]
   );
 
@@ -533,6 +573,66 @@ export async function queryLexicalLaneRows(client, params) {
      ORDER BY rank DESC, b.id ASC
      LIMIT $4`,
     [language, query, namespaces, limit]
+  );
+  return result.rows.map((row) => ({
+    doc_id: String(row.doc_id),
+    ver: Number(row.ver),
+    block_id: String(row.block_id),
+    rank: Number(row.rank)
+  }));
+}
+
+/**
+ * @param {import('pg').Client} client
+ * SQL adapter only: trigram lane candidate query against normalized short fields.
+ * @param {{query:string, limit:number, threshold:number, scope:{namespaces:string[], acl?:Record<string, unknown>}}} params
+ */
+export async function queryTrgmLaneRows(client, params) {
+  const query = normalizeText(params.query);
+  if (!query || query.length < 3) {
+    return [];
+  }
+  const namespaces = Array.isArray(params.scope?.namespaces)
+    ? [...new Set(params.scope.namespaces.map((entry) => String(entry ?? '').trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b)
+      )
+    : [];
+  if (namespaces.length < 1) {
+    return [];
+  }
+  const acl =
+    params.scope?.acl && typeof params.scope.acl === 'object' && !Array.isArray(params.scope.acl) ? params.scope.acl : {};
+  const threshold = Number.isFinite(Number(params.threshold))
+    ? Math.max(0, Math.min(1, Number(params.threshold)))
+    : 0.3;
+  const limit = Math.max(1, Math.min(200, Math.trunc(Number(params.limit ?? 50))));
+  const result = await client.query(
+    `WITH cfg AS (
+       SELECT set_config('pg_trgm.similarity_threshold', $1::text, true)
+     ),
+     q AS (
+       SELECT $2::text AS txt, $3::jsonb AS acl
+     )
+     SELECT b.doc_id,
+            b.ver,
+            b.block_id,
+            GREATEST(
+              similarity(COALESCE(b.title_norm, ''), q.txt),
+              similarity(COALESCE(b.entity_norm, ''), q.txt),
+              similarity(COALESCE(b.key_norm, ''), q.txt)
+            ) AS rank
+     FROM cfg
+     JOIN q ON TRUE
+     JOIN doc_block b ON b.ns = ANY($4::text[])
+     WHERE b.acl @> q.acl
+       AND (
+         (b.title_norm IS NOT NULL AND b.title_norm % q.txt)
+         OR (b.entity_norm IS NOT NULL AND b.entity_norm % q.txt)
+         OR (b.key_norm IS NOT NULL AND b.key_norm % q.txt)
+       )
+     ORDER BY rank DESC, b.id ASC
+     LIMIT $5`,
+    [String(threshold), query, JSON.stringify(acl), namespaces, limit]
   );
   return result.rows.map((row) => ({
     doc_id: String(row.doc_id),
