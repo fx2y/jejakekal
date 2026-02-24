@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+bin="${PDFTOPPM_BIN:-pdftoppm}"
+command -v "$bin" >/dev/null || {
+  echo "missing ${bin} (poppler-utils); set PDFTOPPM_BIN or install poppler-utils" >&2
+  exit 1
+}

@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
+bash mise-tasks/internal/require-poppler
 mise x node@24.13.1 -- node scripts/showcase-002-signoff.mjs

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { makeClient } from '../apps/api/src/db.mjs';
+import { startMockOcrServer } from './ocr-mock-server.mjs';
 
 /** @typedef {Awaited<ReturnType<typeof startApiProcess>>} ApiProcess */
 
@@ -98,11 +99,12 @@ async function waitForCondition(check, label, timeoutMs = 15_000, intervalMs = 5
 
 /**
  * @param {number} port
+ * @param {Record<string, string>} [envOverrides]
  */
-async function startApiProcess(port) {
+async function startApiProcess(port, envOverrides = {}) {
   const child = spawn(process.execPath, ['apps/api/src/server.mjs'], {
     cwd: process.cwd(),
-    env: { ...process.env, API_PORT: String(port) },
+    env: { ...process.env, ...envOverrides, API_PORT: String(port) },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let output = '';
@@ -163,6 +165,14 @@ function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+/**
+ * @param {unknown} value
+ */
+function assertSha(value, label) {
+  const text = typeof value === 'string' ? value : '';
+  assert(/^[a-f0-9]{64}$/.test(text), `${label}_invalid`);
 }
 
 /**
@@ -323,6 +333,9 @@ async function main() {
   let dbClient = null;
   /** @type {Record<string, string>} */
   let stackEnv = {};
+  /** @type {{baseUrl:string,requests:string[],close:() => Promise<void>} | null} */
+  let ocrMock = null;
+  let ocrBaseUrl = '';
 
   const addStep = (step) => {
     summary.steps.push(step);
@@ -395,8 +408,23 @@ async function main() {
       };
     });
 
+    await step('setup.ocr_health', async () => {
+      ocrMock = await startMockOcrServer({ text: 'showcase ocr text' });
+      ocrBaseUrl = ocrMock.baseUrl;
+      const health = await runCommand('mise', [
+        'run',
+        'wait:health',
+        '--',
+        `${ocrBaseUrl}/health`,
+        '15000',
+        '100'
+      ]);
+      assert(health.ok, `ocr health gate failed: ${health.stderr || health.stdout}`);
+      return { mode: 'mock', ocr_base_url: ocrBaseUrl };
+    });
+
     await step('api.start', async () => {
-      api = await startApiProcess(4010);
+      api = await startApiProcess(4010, { OCR_BASE_URL: ocrBaseUrl });
       return { base_url: api.baseUrl };
     });
 
@@ -461,6 +489,75 @@ async function main() {
       return { run_id: runId, status: run.status, dbos_status: run.dbos_status };
     });
     summary.samples.happy_run_id = happy.run_id;
+
+    const harddoc = await step('api.harddoc_ocr', async () => {
+      const started = await postRun(api.baseUrl, {
+        intent: 'doc',
+        args: {
+          source: 'table header|value\nx',
+          mime: 'application/pdf'
+        },
+        sleepMs: 10
+      });
+      assert(started.status === 202, `harddoc start expected 202 got ${started.status}`);
+      const runId = String(started.json.run_id ?? '');
+      assert(runId.length > 0, 'harddoc missing run_id');
+      const run = await waitForRunTerminal(api.baseUrl, runId);
+      assert(run?.status === 'done', `harddoc status=${String(run?.status ?? 'missing')}`);
+      assert(run?.dbos_status === 'SUCCESS', `harddoc dbos_status=${String(run?.dbos_status ?? 'missing')}`);
+
+      const timeline = Array.isArray(run.timeline) ? run.timeline : [];
+      const gate = timeline.find((row) => row.function_name === 'ocr-persist-gate');
+      const pagesStep = timeline.find((row) => row.function_name === 'ocr-pages');
+      const merge = timeline.find((row) => row.function_name === 'ocr-merge-diff');
+      assert(gate, 'harddoc missing ocr-persist-gate');
+      assert(pagesStep, 'harddoc missing ocr-pages');
+      assert(merge, 'harddoc missing ocr-merge-diff');
+
+      const hardPages = Array.isArray(gate.output?.hard_pages)
+        ? [...new Set(gate.output.hard_pages.map((x) => Number(x)).filter((x) => Number.isFinite(x)))].sort(
+            (a, b) => a - b
+          )
+        : [];
+      const ocrPages = Array.isArray(pagesStep.output?.ocr_pages)
+        ? [
+            ...new Set(
+              pagesStep.output.ocr_pages
+                .map((row) => Number(row?.page_idx))
+                .filter((x) => Number.isFinite(x))
+            )
+          ].sort((a, b) => a - b)
+        : [];
+      const diffSha = merge.output?.diff_sha;
+      assert(hardPages.length > 0, 'harddoc hard_pages empty');
+      assert(ocrPages.length > 0, 'harddoc ocr_pages empty');
+      assertSha(diffSha, 'harddoc_diff_sha');
+
+      const client = await ensureDbClient();
+      const effectRows = await client.query(
+        `SELECT effect_key, COUNT(*) AS n
+         FROM side_effects
+         WHERE effect_key LIKE $1
+         GROUP BY effect_key
+         ORDER BY effect_key ASC`,
+        [`${runId}|ocr-page|%`]
+      );
+      assert(effectRows.rows.length === ocrPages.length, 'harddoc ocr effect rows mismatch');
+      assert(effectRows.rows.every((row) => Number(row.n) === 1), 'harddoc duplicate ocr side_effect row');
+      assert(
+        Array.isArray(ocrMock?.requests) && ocrMock.requests.length === ocrPages.length,
+        'harddoc mock ocr call count mismatch'
+      );
+
+      return {
+        run_id: runId,
+        hard_pages: hardPages,
+        ocr_pages: ocrPages,
+        diff_sha: diffSha,
+        ocr_effect_rows: effectRows.rows.length
+      };
+    });
+    summary.samples.harddoc_run_id = harddoc.run_id;
 
     const exported = await step('api.export', async () => {
       const result = await exportRun(api.baseUrl, String(summary.samples.happy_run_id));
@@ -697,6 +794,7 @@ async function main() {
   } catch {
     summary.ok = false;
   } finally {
+    await ocrMock?.close().catch(() => {});
     if (killApi) await killApi.stop().catch(() => {});
     if (api) await api.stop().catch(() => {});
     await dbClient?.end().catch(() => {});
