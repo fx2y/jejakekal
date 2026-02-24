@@ -19,7 +19,14 @@ import { queryRankedBlocksByTsQuery } from '../src/retrieval/service.mjs';
 import { closeServer, listenLocal } from '../src/http.mjs';
 import { exportRunBundle } from '../src/export-run.mjs';
 import { deriveHardDocWorkflowId } from '../src/runs-service.mjs';
-import { buildLexicalHeadline, inspectLexicalQuery, queryVectorLaneRows } from '../src/search/block-repository.mjs';
+import {
+  buildLexicalHeadline,
+  inspectLexicalQuery,
+  populateBlockTsv,
+  queryTableCellLaneRows,
+  queryVectorLaneRows,
+  upsertBlockLedger
+} from '../src/search/block-repository.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -1395,6 +1402,115 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
     hnswExplainText.includes('"Node Type":"Index Scan"') ||
     hnswExplainText.includes('"Node Type":"Index Only Scan"');
   assert.equal(hasVecIndexScan, true);
+});
+
+test('C5 table lane: deterministic table_cell addresses + exact-key fast path + fts fallback survive reingest', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+
+  const docId = `doc-c5-table-${process.pid}-${Date.now()}`;
+  const rawSha = sha256(`raw:${docId}`);
+  await client.query(
+    `INSERT INTO doc (doc_id, raw_sha, filename, mime, byte_len, latest_ver)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [docId, rawSha, 'table.txt', 'text/plain', 12, 1]
+  );
+  await client.query(
+    `INSERT INTO doc_ver (doc_id, ver, raw_sha, marker_config_sha)
+     VALUES ($1,$2,$3,$4)`,
+    [docId, 1, rawSha, 'c'.repeat(64)]
+  );
+
+  const tableBlock = {
+    block_id: 'tbl-c5-1',
+    type: 'table',
+    page: 1,
+    bbox: [0, 0, 10, 10],
+    text: 'inventory table',
+    data: {
+      headers: ['item', 'qty', 'amount'],
+      rows: [
+        { qty: '2', amount: '$10.50', item: 'Widget Alpha' },
+        { item: 'Widget Beta', amount: '$20.00', qty: '4' }
+      ]
+    },
+    block_sha: 'ab'.repeat(32)
+  };
+  await upsertBlockLedger(client, {
+    docId,
+    version: 1,
+    blocks: [tableBlock],
+    provenance: { source: 'test-c5' }
+  });
+  await populateBlockTsv(client, { docId, version: 1, language: 'english' });
+
+  const exactA = await queryTableCellLaneRows(client, {
+    query: 'amount',
+    language: 'english',
+    limit: 10,
+    scope: { namespaces: ['default'] }
+  });
+  const exactB = await queryTableCellLaneRows(client, {
+    query: 'amount',
+    language: 'english',
+    limit: 10,
+    scope: { namespaces: ['default'] }
+  });
+  assert.equal(exactA.length >= 2, true);
+  assert.equal(exactA.every((row) => row.match_kind === 'exact'), true);
+  assert.deepEqual(
+    exactA.map((row) => [row.table_id, row.row_idx, row.col_idx]),
+    exactB.map((row) => [row.table_id, row.row_idx, row.col_idx])
+  );
+  assert.equal(exactA[0].key_norm, 'amount');
+  assert.equal(typeof exactA[0].cite, 'object');
+  assert.equal(exactA[0].cite.doc_version, 1);
+  assert.equal(exactA[0].cite.page, 1);
+  assert.equal(typeof exactA[0].cite.block_hash, 'string');
+  assert.equal(typeof exactA[0].cite.block_id, 'string');
+  assert.notEqual(exactA[0].table_id, tableBlock.block_id);
+
+  const ftsA = await queryTableCellLaneRows(client, {
+    query: 'widget beta',
+    language: 'english',
+    limit: 10,
+    scope: { namespaces: ['default'] }
+  });
+  const ftsB = await queryTableCellLaneRows(client, {
+    query: 'widget beta',
+    language: 'english',
+    limit: 10,
+    scope: { namespaces: ['default'] }
+  });
+  assert.equal(ftsA.length >= 1, true);
+  assert.equal(ftsA.every((row) => row.match_kind === 'fts'), true);
+  assert.deepEqual(
+    ftsA.map((row) => [row.table_id, row.row_idx, row.col_idx]),
+    ftsB.map((row) => [row.table_id, row.row_idx, row.col_idx])
+  );
+
+  const beforeRows = await client.query(
+    `SELECT table_id, row_idx, col_idx, key_norm, val_norm, cite::text AS cite
+     FROM table_cell
+     WHERE doc_id = $1 AND ver = 1
+     ORDER BY table_id ASC, row_idx ASC, col_idx ASC`,
+    [docId]
+  );
+  await upsertBlockLedger(client, {
+    docId,
+    version: 1,
+    blocks: [tableBlock],
+    provenance: { source: 'test-c5-reingest' }
+  });
+  await populateBlockTsv(client, { docId, version: 1, language: 'english' });
+  const afterRows = await client.query(
+    `SELECT table_id, row_idx, col_idx, key_norm, val_norm, cite::text AS cite
+     FROM table_cell
+     WHERE doc_id = $1 AND ver = 1
+     ORDER BY table_id ASC, row_idx ASC, col_idx ASC`,
+    [docId]
+  );
+  assert.deepEqual(beforeRows.rows, afterRows.rows);
 });
 
 test('P0 malformed JSON on POST /runs returns 400 invalid_json', async (t) => {

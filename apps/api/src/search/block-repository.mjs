@@ -1,5 +1,6 @@
 import { resolveFtsLanguage } from '../retrieval/lanes/lexical.mjs';
 import { toPgVectorLiteral } from '../retrieval/embeddings.mjs';
+import { deriveTableId } from '../../../../packages/pipeline/src/docir/normalize-marker.mjs';
 
 const DEFAULT_NAMESPACE = 'default';
 
@@ -115,6 +116,26 @@ function rowizeTableCells(data, fallbackText) {
     });
   }
   return out.sort(compareTableCells);
+}
+
+/**
+ * Build a stable table payload for `table_id` hashing from persisted block data.
+ * Marker tables usually store rows/headers at top-level; OCR tables store payload under `data.table`.
+ * @param {Record<string, unknown>} data
+ * @param {string|null} fallbackText
+ */
+function canonicalizeTablePayload(data, fallbackText) {
+  const nested = asRecord(data.table);
+  if (nested) return nested;
+  /** @type {Record<string, unknown>} */
+  const picked = {};
+  for (const key of ['headers', 'rows', 'cells', 'columns', 'caption', 'title', 'unit']) {
+    if (key in data) {
+      picked[key] = data[key];
+    }
+  }
+  if (Object.keys(picked).length > 0) return picked;
+  return fallbackText ? { text: fallbackText } : {};
 }
 
 /**
@@ -365,7 +386,14 @@ async function syncRetrievalProjection(client, params) {
   let insertedTableCells = 0;
   for (const block of tableBlocksResult.rows) {
     const data = asRecord(block.data) ?? {};
-    const cells = rowizeTableCells(data, normalizeText(block.text));
+    const fallbackText = normalizeText(block.text);
+    const cells = rowizeTableCells(data, fallbackText);
+    const tableId = deriveTableId(
+      params.docId,
+      params.version,
+      Number(block.page),
+      canonicalizeTablePayload(data, fallbackText)
+    );
     const cite = {
       doc_version: params.version,
       page: Number(block.page),
@@ -391,7 +419,7 @@ async function syncRetrievalProjection(client, params) {
         [
           params.docId,
           params.version,
-          String(block.block_id),
+          tableId,
           Number(block.page),
           cell.row_idx,
           cell.col_idx,
@@ -824,6 +852,155 @@ export async function queryVectorLaneRows(client, params) {
     rank: Number(row.rank),
     distance: Number(row.distance)
   }));
+}
+
+/**
+ * @param {unknown} value
+ */
+function asTableCellCite(value) {
+  const cite = asRecord(value);
+  return cite ?? {};
+}
+
+/**
+ * @param {import('pg').Client} client
+ * SQL adapter only: table-cell retrieval with exact-key fast path and FTS fallback.
+ * Returns ordered cell hits (not block-deduped) so callers can preserve `(table,row,col)` address semantics.
+ * @param {{query:string, language:string, limit:number, scope:{namespaces:string[], acl?:Record<string, unknown>}}} params
+ */
+export async function queryTableCellLaneRows(client, params) {
+  const rawQuery = String(params.query ?? '').trim();
+  if (!rawQuery) return [];
+  const keyQuery = normalizeText(rawQuery);
+  if (!keyQuery) return [];
+  const language = resolveFtsLanguage(params.language);
+  const namespaces = Array.isArray(params.scope?.namespaces)
+    ? [...new Set(params.scope.namespaces.map((entry) => String(entry ?? '').trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b)
+      )
+    : [];
+  if (namespaces.length < 1) return [];
+  const acl =
+    params.scope?.acl && typeof params.scope.acl === 'object' && !Array.isArray(params.scope.acl) ? params.scope.acl : {};
+  const limit = Math.max(1, Math.min(200, Math.trunc(Number(params.limit ?? 50))));
+
+  const exact = await client.query(
+    `WITH q AS (
+       SELECT $1::text AS key_q, $2::jsonb AS acl
+     )
+     SELECT t.doc_id,
+            t.ver,
+            (t.cite->>'block_id') AS block_id,
+            t.table_id,
+            t.row_idx,
+            t.col_idx,
+            t.key_norm,
+            t.val_norm,
+            t.val_num,
+            t.unit,
+            t.cite,
+            1.0::double precision AS rank,
+            'exact'::text AS match_kind
+     FROM q
+     JOIN table_cell t ON t.key_norm = q.key_q
+     JOIN doc_block b
+       ON b.doc_id = t.doc_id
+      AND b.ver = t.ver
+      AND b.block_id = (t.cite->>'block_id')
+      AND b.type = 'table'
+     WHERE b.ns = ANY($3::text[])
+       AND b.acl @> q.acl
+     ORDER BY t.doc_id ASC, t.ver ASC, t.page ASC, t.table_id ASC, t.row_idx ASC, t.col_idx ASC
+     LIMIT $4`,
+    [keyQuery, JSON.stringify(acl), namespaces, limit]
+  );
+  if (exact.rows.length > 0) {
+    return exact.rows.map((row) => ({
+      doc_id: String(row.doc_id),
+      ver: Number(row.ver),
+      block_id: String(row.block_id),
+      table_id: String(row.table_id),
+      row_idx: Number(row.row_idx),
+      col_idx: Number(row.col_idx),
+      key_norm: typeof row.key_norm === 'string' ? row.key_norm : null,
+      val_norm: typeof row.val_norm === 'string' ? row.val_norm : null,
+      val_num: typeof row.val_num === 'number' ? row.val_num : row.val_num == null ? null : Number(row.val_num),
+      unit: typeof row.unit === 'string' ? row.unit : null,
+      cite: asTableCellCite(row.cite),
+      rank: Number(row.rank),
+      match_kind: 'exact'
+    }));
+  }
+
+  const diagnostics = await inspectLexicalQuery(client, { query: rawQuery, language });
+  if (!diagnostics.indexable) return [];
+
+  const fallback = await client.query(
+    `WITH q AS (
+       SELECT websearch_to_tsquery($1::regconfig, $2) AS tsq, $3::jsonb AS acl
+     )
+     SELECT t.doc_id,
+            t.ver,
+            (t.cite->>'block_id') AS block_id,
+            t.table_id,
+            t.row_idx,
+            t.col_idx,
+            t.key_norm,
+            t.val_norm,
+            t.val_num,
+            t.unit,
+            t.cite,
+            ts_rank_cd(t.vec, q.tsq) AS rank,
+            'fts'::text AS match_kind
+     FROM q
+     JOIN table_cell t ON t.vec @@ q.tsq
+     JOIN doc_block b
+       ON b.doc_id = t.doc_id
+      AND b.ver = t.ver
+      AND b.block_id = (t.cite->>'block_id')
+      AND b.type = 'table'
+     WHERE b.ns = ANY($4::text[])
+       AND b.acl @> q.acl
+     ORDER BY rank DESC, t.doc_id ASC, t.ver ASC, t.page ASC, t.table_id ASC, t.row_idx ASC, t.col_idx ASC
+     LIMIT $5`,
+    [language, rawQuery, JSON.stringify(acl), namespaces, limit]
+  );
+  return fallback.rows.map((row) => ({
+    doc_id: String(row.doc_id),
+    ver: Number(row.ver),
+    block_id: String(row.block_id),
+    table_id: String(row.table_id),
+    row_idx: Number(row.row_idx),
+    col_idx: Number(row.col_idx),
+    key_norm: typeof row.key_norm === 'string' ? row.key_norm : null,
+    val_norm: typeof row.val_norm === 'string' ? row.val_norm : null,
+    val_num: typeof row.val_num === 'number' ? row.val_num : row.val_num == null ? null : Number(row.val_num),
+    unit: typeof row.unit === 'string' ? row.unit : null,
+    cite: asTableCellCite(row.cite),
+    rank: Number(row.rank),
+    match_kind: 'fts'
+  }));
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{query:string, language:string, limit:number, scope:{namespaces:string[], acl?:Record<string, unknown>}}} params
+ */
+export async function queryTableLaneRows(client, params) {
+  const cellRows = await queryTableCellLaneRows(client, params);
+  const byBlock = new Map();
+  for (const row of cellRows) {
+    const key = `${row.doc_id}:${row.ver}:${row.block_id}`;
+    if (!byBlock.has(key)) {
+      byBlock.set(key, {
+        doc_id: row.doc_id,
+        ver: row.ver,
+        block_id: row.block_id,
+        rank: row.rank
+      });
+    }
+  }
+  return [...byBlock.values()];
 }
 
 /**

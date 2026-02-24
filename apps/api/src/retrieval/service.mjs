@@ -1,4 +1,4 @@
-import { queryLexicalLaneRows, queryTrgmLaneRows, queryVectorLaneRows } from '../search/block-repository.mjs';
+import { queryLexicalLaneRows, queryTableLaneRows, queryTrgmLaneRows, queryVectorLaneRows } from '../search/block-repository.mjs';
 import { RETRIEVAL_K_BUDGET } from './contracts.mjs';
 import { embedTextDeterministic } from './embeddings.mjs';
 import { fuseByReciprocalRank } from './fusion.mjs';
@@ -40,6 +40,7 @@ function mapLexicalByBlock(rows) {
 /**
  * @param {{
  *  queryLexicalLaneRows: typeof queryLexicalLaneRows,
+ *  queryTableLaneRows: typeof queryTableLaneRows,
  *  queryTrgmLaneRows: typeof queryTrgmLaneRows,
  *  queryVectorLaneRows: typeof queryVectorLaneRows
  * }} deps
@@ -71,12 +72,17 @@ export function createRetrievalService(deps) {
       vector: params.vector,
       scope
     });
-    buildTableLanePlan(params);
-    if (!lexicalPlan && !trgmPlan && !vectorPlan) {
+    const tablePlan = buildTableLanePlan({
+      query: params.query,
+      language: params.language,
+      limit: params.limit,
+      scope
+    });
+    if (!lexicalPlan && !trgmPlan && !vectorPlan && !tablePlan) {
       return [];
     }
     const vectorQuery = vectorPlan ? embedTextDeterministic(vectorPlan.query) : null;
-    const [lexicalRowsRaw, trgmRowsRaw, vectorRowsRaw] = await Promise.all([
+    const [lexicalRowsRaw, trgmRowsRaw, vectorRowsRaw, tableRowsRaw] = await Promise.all([
       lexicalPlan ? deps.queryLexicalLaneRows(client, lexicalPlan) : Promise.resolve([]),
       trgmPlan ? deps.queryTrgmLaneRows(client, trgmPlan) : Promise.resolve([]),
       vectorPlan && vectorQuery
@@ -90,11 +96,13 @@ export function createRetrievalService(deps) {
             indexType: vectorPlan.indexType,
             scope: vectorPlan.scope
           })
-        : Promise.resolve([])
+        : Promise.resolve([]),
+      tablePlan ? deps.queryTableLaneRows(client, tablePlan) : Promise.resolve([])
     ]);
     const lexicalRows = sortLexicalRows(lexicalRowsRaw);
     const trgmRows = sortLexicalRows(trgmRowsRaw);
     const vectorRows = sortLexicalRows(vectorRowsRaw);
+    const tableRows = sortLexicalRows(tableRowsRaw);
     const laneResults = [];
     if (lexicalRows.length > 0) {
       laneResults.push({ lane: 'lexical', rows: lexicalRows });
@@ -105,6 +113,9 @@ export function createRetrievalService(deps) {
     if (vectorRows.length > 0) {
       laneResults.push({ lane: 'vector', rows: vectorRows });
     }
+    if (tableRows.length > 0) {
+      laneResults.push({ lane: 'table', rows: tableRows });
+    }
     if (laneResults.length < 1) {
       return [];
     }
@@ -114,18 +125,20 @@ export function createRetrievalService(deps) {
       limit: lexicalPlan?.limit ?? trgmPlan?.limit
     });
     const lexicalByBlock = mapLexicalByBlock(lexicalRows);
+    const tableByBlock = mapLexicalByBlock(tableRows);
     const trgmByBlock = mapLexicalByBlock(trgmRows);
     const vectorByBlock = mapLexicalByBlock(vectorRows);
     return fused.map((row) => {
       const key = `${row.doc_id}:${row.ver}:${row.block_id}`;
       const lexical = lexicalByBlock.get(key);
+      const table = tableByBlock.get(key);
       const trgm = trgmByBlock.get(key);
       const vector = vectorByBlock.get(key);
       return {
         doc_id: row.doc_id,
         ver: row.ver,
         block_id: row.block_id,
-        rank: lexical ? lexical.rank : trgm ? trgm.rank : vector ? vector.rank : row.score
+        rank: lexical ? lexical.rank : table ? table.rank : trgm ? trgm.rank : vector ? vector.rank : row.score
       };
     });
   }
@@ -135,6 +148,6 @@ export function createRetrievalService(deps) {
   };
 }
 
-const retrievalService = createRetrievalService({ queryLexicalLaneRows, queryTrgmLaneRows, queryVectorLaneRows });
+const retrievalService = createRetrievalService({ queryLexicalLaneRows, queryTableLaneRows, queryTrgmLaneRows, queryVectorLaneRows });
 
 export const queryRankedBlocksByTsQuery = retrievalService.queryRankedBlocksByTsQuery;

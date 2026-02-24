@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeOcrMergePlan } from '../src/ocr/merge-core.mjs';
+import { deriveTableId } from '../../../packages/pipeline/src/docir.mjs';
 
 function markerBlock(overrides) {
   return {
@@ -140,4 +141,36 @@ test('ocr merge: patchless hard pages are no-op and cannot trigger delete-only a
   assert.deepEqual(plan.page_diffs, []);
   assert.deepEqual(plan.replacement_blocks, []);
   assert.equal(plan.diff_sha, null);
+});
+
+test('C5 ocr merge table payload remains compatible with deterministic table_id hashing', () => {
+  const plan = computeOcrMergePlan({
+    docId: 'doc-ocr-table',
+    version: 3,
+    hardPages: [0],
+    currentBlocks: [],
+    patches: [
+      {
+        page_idx: 0,
+        patch: {
+          tables: [
+            {
+              headers: ['Metric', 'Value'],
+              rows: [{ Value: '42', Metric: 'Revenue' }]
+            }
+          ]
+        }
+      }
+    ]
+  });
+  const tableBlock = plan.replacement_blocks.find((row) => row.type === 'table');
+  assert.ok(tableBlock);
+  const data = /** @type {any} */ (tableBlock.data);
+  const tablePayload = data.table;
+  const idA = deriveTableId('doc-ocr-table', 3, 1, tablePayload);
+  const idB = deriveTableId('doc-ocr-table', 3, 1, {
+    rows: [{ Metric: 'Revenue', Value: '42' }],
+    headers: ['Metric', 'Value']
+  });
+  assert.equal(idA, idB);
 });

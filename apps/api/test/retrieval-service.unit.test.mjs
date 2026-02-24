@@ -6,6 +6,7 @@ import { normalizeRetrievalScope } from '../src/retrieval/scope.mjs';
 function makeService(overrides = {}) {
   return createRetrievalService({
     queryLexicalLaneRows: async () => [],
+    queryTableLaneRows: async () => [],
     queryTrgmLaneRows: async () => [],
     queryVectorLaneRows: async () => [],
     ...overrides
@@ -91,6 +92,43 @@ test('retrieval service: trgm lane can return typo hits when lexical misses', as
     }
   );
   assert.deepEqual(rows, [{ doc_id: 'doc-a', ver: 1, block_id: 'b1', rank: 0.61 }]);
+});
+
+test('retrieval service: table lane can return exact-key hits when other lanes miss', async () => {
+  const service = makeService({
+    queryTableLaneRows: async () => [{ doc_id: 'doc-a', ver: 1, block_id: 'tbl-1', rank: 1 }]
+  });
+  const rows = await service.queryRankedBlocksByTsQuery(
+    /** @type {import('pg').Client} */ ({}),
+    {
+      query: 'amount',
+      scope: { namespaces: ['default'] }
+    }
+  );
+  assert.deepEqual(rows, [{ doc_id: 'doc-a', ver: 1, block_id: 'tbl-1', rank: 1 }]);
+});
+
+test('retrieval service: table plan forwards canonical scope+language to repository adapter', async () => {
+  /** @type {Array<any>} */
+  const calls = [];
+  const service = makeService({
+    queryTableLaneRows: async (_client, plan) => {
+      calls.push(plan);
+      return [];
+    }
+  });
+  await service.queryRankedBlocksByTsQuery(
+    /** @type {import('pg').Client} */ ({}),
+    {
+      query: 'amount',
+      language: 'english',
+      scope: { namespaces: ['default'] }
+    }
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].lane, 'table');
+  assert.equal(calls[0].language, 'english');
+  assert.deepEqual(calls[0].scope, { namespaces: ['default'] });
 });
 
 test('retrieval service: vector lane is opt-in and forwards deterministic vector plan fields', async () => {

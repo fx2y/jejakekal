@@ -41,6 +41,16 @@ export function deriveBlockId(docId, version, page, type, blockSha) {
 }
 
 /**
+ * @param {string} docId
+ * @param {number} version
+ * @param {number} page
+ * @param {unknown} tablePayload
+ */
+export function deriveTableId(docId, version, page, tablePayload) {
+  return sha256(`${docId}:${version}:${page}:table:${stableStringify(tablePayload)}`);
+}
+
+/**
  * @param {unknown} value
  * @returns {Array<number>|null}
  */

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveBlockId, normalizeMarkerToBlocks } from '../src/docir.mjs';
+import { deriveBlockId, deriveTableId, normalizeMarkerToBlocks } from '../src/docir.mjs';
 
 test('C4 docir normalizer is deterministic for identical marker payloads', () => {
   const markerJson = {
@@ -27,4 +27,27 @@ test('C4 block id uses deterministic tuple doc/ver/page/type/content-sha', () =>
   assert.equal(idA, idB);
   assert.notEqual(idA, idC);
   assert.equal(idA.length, 24);
+});
+
+test('C5 table id uses deterministic tuple doc/ver/page/canonical-table-payload', () => {
+  const payloadA = {
+    headers: ['sku', 'qty'],
+    rows: [
+      { qty: '2', sku: 'A-1' },
+      { sku: 'B-2', qty: '3' }
+    ]
+  };
+  const payloadB = {
+    rows: [
+      { sku: 'A-1', qty: '2' },
+      { qty: '3', sku: 'B-2' }
+    ],
+    headers: ['sku', 'qty']
+  };
+  const idA = deriveTableId('doc-1', 1, 2, payloadA);
+  const idB = deriveTableId('doc-1', 1, 2, payloadB);
+  const idC = deriveTableId('doc-1', 1, 3, payloadA);
+  assert.equal(idA, idB);
+  assert.notEqual(idA, idC);
+  assert.equal(idA.length, 64);
 });
