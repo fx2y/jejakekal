@@ -308,7 +308,7 @@ test('C0 contract freeze: baseline text lane function_id -> step mapping is unch
   assert.deepEqual(lane, BASELINE_TEXT_LANE_STEPS);
 });
 
-test('C1 hard-doc branch: gate decisions persist to ocr_job/ocr_page without touching baseline lane', async (t) => {
+test('C2 hard-doc branch: gate persists and rendered pages store PNG URIs/SHAs', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
   const workflowId = `hard-c1-${process.pid}-${Date.now()}`;
@@ -319,6 +319,7 @@ test('C1 hard-doc branch: gate decisions persist to ocr_job/ocr_page without tou
     sleepMs: 1
   });
   assert.ok(timeline.some((row) => row.step === 'ocr-persist-gate'));
+  assert.ok(timeline.some((row) => row.step === 'ocr-render-store-pages'));
 
   const jobRows = await client.query(
     `SELECT job_id, doc_id, ver, gate_rev, policy
@@ -334,7 +335,7 @@ test('C1 hard-doc branch: gate decisions persist to ocr_job/ocr_page without tou
   assert.equal(typeof jobRows.rows[0].policy, 'object');
 
   const pageRows = await client.query(
-    `SELECT page_idx, status, gate_score, gate_reasons
+    `SELECT page_idx, status, gate_score, gate_reasons, png_uri, png_sha
      FROM ocr_page
      WHERE job_id = $1
      ORDER BY page_idx ASC`,
@@ -345,10 +346,21 @@ test('C1 hard-doc branch: gate decisions persist to ocr_job/ocr_page without tou
     pageRows.rows.map((row) => row.page_idx),
     [0, 1, 2]
   );
-  assert.ok(pageRows.rows.some((row) => row.status === 'gated'));
+  assert.ok(pageRows.rows.some((row) => row.status === 'rendered'));
   assert.ok(
     pageRows.rows.every((row) =>
       Array.isArray(row.gate_reasons) && typeof Number(row.gate_score ?? 0) === 'number'
+    )
+  );
+  const renderedRows = pageRows.rows.filter((row) => row.status === 'rendered');
+  assert.ok(renderedRows.length >= 1);
+  assert.ok(
+    renderedRows.every(
+      (row) =>
+        typeof row.png_uri === 'string' &&
+        row.png_uri.startsWith('s3://mem/run/') &&
+        typeof row.png_sha === 'string' &&
+        row.png_sha.length === 64
     )
   );
 });

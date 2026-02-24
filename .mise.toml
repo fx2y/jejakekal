@@ -25,6 +25,7 @@ OCR_MODEL = "zai-org/GLM-OCR"
 OCR_BASE_URL = "http://127.0.0.1:8000"
 OCR_TIMEOUT_MS = "120000"
 OCR_MAX_PAGES = "10"
+PDFTOPPM_BIN = "pdftoppm"
 
 [tasks.verify]
 description = "L1 quick gate"

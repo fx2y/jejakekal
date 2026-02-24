@@ -19,12 +19,13 @@ import { MARKER_CONFIG_PLACEHOLDER_SHA, reserveDocVersion } from './ingest/doc-r
 import { buildExecMemoMarkdown } from './ingest/exec-memo.mjs';
 import { listBlocksByDocVersion, populateBlockTsv, upsertBlockLedger } from './search/block-repository.mjs';
 import { callIdempotentEffect } from './effects.mjs';
-import { buildIngestEffectKey } from './ingest/effect-key.mjs';
+import { buildIngestEffectKey, buildOcrPageRenderEffectKey } from './ingest/effect-key.mjs';
 import { defaultBundlesRootPath } from './bundles-root.mjs';
 import { resolveOcrPolicy } from './ocr/config.mjs';
 import { runDefaultTextLane } from './workflows/default-text-lane.mjs';
 import { runOcrGateSeam } from './ocr/gate-seam.mjs';
-import { insertOcrJob, upsertOcrPage } from './ocr/repository.mjs';
+import { insertOcrJob, updateOcrPageRender, upsertOcrPage } from './ocr/repository.mjs';
+import { runOcrRenderSeam } from './ocr/render-seam.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>) | undefined} */
@@ -701,6 +702,97 @@ async function runS5PersistOcrGate(input) {
   });
 }
 
+/**
+ * @param {{workflowId:string,docId:string,version:number,pdfPath?:string,hardPages:number[]}} input
+ */
+async function renderAndStoreOcrPagesStep(input) {
+  const rendered = await runOcrRenderSeam({
+    hard_pages: input.hardPages,
+    pdf_path: input.pdfPath
+  });
+  if (!Array.isArray(rendered.pages) || rendered.pages.length < 1) {
+    return { rendered_pages: [] };
+  }
+  const store = getS3BlobStore();
+  /** @type {Array<{page_idx:number,png_uri:string,png_sha:string,effect_replayed:boolean}>} */
+  const persisted = [];
+  for (const page of rendered.pages) {
+    if (!Buffer.isBuffer(page.png) || typeof page.png_sha !== 'string') {
+      continue;
+    }
+    const objectKey = buildRunObjectKey({
+      runId: input.workflowId,
+      relativePath: `ocr/pages/p${page.page_idx}/${page.png_sha}.png`
+    });
+    const effectKey = buildOcrPageRenderEffectKey({
+      workflowId: input.workflowId,
+      docId: input.docId,
+      version: input.version,
+      pageIdx: page.page_idx,
+      pngSha256: page.png_sha
+    });
+    const effect = await runIdempotentExternalEffect(effectKey, async () => {
+      const blob = await store.putObjectChecked({
+        key: objectKey,
+        payload: page.png,
+        contentType: page.mime ?? 'image/png'
+      });
+      return {
+        page_idx: page.page_idx,
+        png_uri: blob.uri,
+        png_sha: page.png_sha
+      };
+    });
+    persisted.push({
+      page_idx: Number(effect.response.page_idx),
+      png_uri: String(effect.response.png_uri),
+      png_sha: String(effect.response.png_sha),
+      effect_replayed: effect.replayed
+    });
+  }
+  return withAppClient(async (client) => {
+    await client.query('BEGIN');
+    try {
+      const updated = [];
+      for (const page of persisted) {
+        const row = await updateOcrPageRender(client, {
+          job_id: input.workflowId,
+          page_idx: page.page_idx,
+          status: 'rendered',
+          png_uri: page.png_uri,
+          png_sha: page.png_sha
+        });
+        updated.push({ ...row, effect_replayed: page.effect_replayed });
+      }
+      await client.query('COMMIT');
+      return {
+        rendered_pages: updated.map((row) => ({
+          page_idx: row.page_idx,
+          png_uri: row.png_uri,
+          png_sha: row.png_sha,
+          effect_replayed: row.effect_replayed
+        }))
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  });
+}
+
+/**
+ * @param {{workflowId:string,docId:string,version:number,pdfPath?:string,hardPages:number[]}} input
+ */
+async function runS6RenderStoreOcrPages(input) {
+  return DBOS.runStep(() => renderAndStoreOcrPagesStep(input), {
+    name: 'ocr-render-store-pages',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
+}
+
 async function defaultWorkflowImpl(input) {
   return runDefaultTextLane(input, {
     workflowId: DBOS.workflowID ?? 'unknown-workflow',
@@ -730,13 +822,21 @@ async function hardDocWorkflowImpl(input) {
     runS3StoreParseOutputs,
     runS4NormalizeDocir,
     runS4xAfterNormalize: async (ctx) => {
-      await runS5PersistOcrGate({
+      const gate = await runS5PersistOcrGate({
         workflowId: ctx.workflowId,
         docId: ctx.reserved.doc_id,
         version: ctx.reserved.ver,
         markerJson: ctx.markerJson,
         ocrPolicy: input.ocrPolicy
       });
+      const rendered = await runS6RenderStoreOcrPages({
+        workflowId: ctx.workflowId,
+        docId: ctx.reserved.doc_id,
+        version: ctx.reserved.ver,
+        pdfPath: ctx.marker?.paths?.sourcePdf,
+        hardPages: gate.hard_pages
+      });
+      return { gate, rendered };
     },
     runS4ToS5Pause,
     runS5IndexFts,

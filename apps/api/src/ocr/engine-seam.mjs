@@ -1,5 +1,5 @@
 /**
- * @param {{pages:Array<{page_idx:number,png_uri:string|null,png_sha:string|null}>}} params
+ * @param {{pages:Array<{page_idx:number,png:Buffer|null,png_sha:string|null,mime:string|null,png_uri?:string|null}>}} params
  */
 export async function runOcrEngineSeam(params) {
   return {

@@ -27,6 +27,17 @@ function assertPositiveInteger(value, field) {
 
 /**
  * @param {unknown} value
+ * @param {string} field
+ */
+function assertNonNegativeInteger(value, field) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${field}_invalid`);
+  }
+  return value;
+}
+
+/**
+ * @param {unknown} value
  */
 function assertStepName(value) {
   const step = assertNonEmptyString(value, 'effect_step');
@@ -57,4 +68,16 @@ export function buildIngestEffectKey(params) {
   const version = assertPositiveInteger(params.version, 'version');
   const digest = assertSha256(params.sha256);
   return `${workflowId}|${step}|${docId}|${version}|${digest}`;
+}
+
+/**
+ * @param {{workflowId:string,docId:string,version:number,pageIdx:number,pngSha256:string}} params
+ */
+export function buildOcrPageRenderEffectKey(params) {
+  const workflowId = assertValidRunId(params.workflowId, 'run_id');
+  const docId = assertNonEmptyString(params.docId, 'doc_id');
+  const version = assertPositiveInteger(params.version, 'version');
+  const pageIdx = assertNonNegativeInteger(params.pageIdx, 'page_idx');
+  const digest = assertSha256(params.pngSha256);
+  return `${workflowId}|ocr-render-page|${docId}|${version}|p${pageIdx}|${digest}`;
 }

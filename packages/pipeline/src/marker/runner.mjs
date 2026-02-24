@@ -11,6 +11,68 @@ const REQUIRED_OUTPUT_FILES = Object.freeze(['marker.json', 'marker.md', 'chunks
 /**
  * @param {string} value
  */
+function escapePdfText(value) {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('(', '\\(')
+    .replaceAll(')', '\\)')
+    .replace(/[^\x20-\x7E]/g, '?');
+}
+
+/**
+ * Deterministic minimal PDF emitter used for C2 page-render integration tests and
+ * hard-doc fallback plumbing while raw ingest remains text-first.
+ * @param {string} source
+ */
+function buildDeterministicPdf(source) {
+  const lines = source
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const pageTexts = lines.length > 0 ? lines : ['(empty)'];
+  const pageCount = pageTexts.length;
+  const fontObjNum = 3 + pageCount * 2;
+  /** @type {Map<number, string>} */
+  const objects = new Map();
+  objects.set(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  const kids = [];
+  for (let idx = 0; idx < pageCount; idx += 1) {
+    const pageObjNum = 3 + idx * 2;
+    const contentObjNum = pageObjNum + 1;
+    kids.push(`${pageObjNum} 0 R`);
+    const escaped = escapePdfText(pageTexts[idx]);
+    const stream = `BT /F1 14 Tf 36 756 Td (${escaped}) Tj ET`;
+    const streamLength = Buffer.byteLength(stream, 'utf8');
+    objects.set(
+      pageObjNum,
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontObjNum} 0 R >> >> /Contents ${contentObjNum} 0 R >>`
+    );
+    objects.set(contentObjNum, `<< /Length ${streamLength} >>\nstream\n${stream}\nendstream`);
+  }
+  objects.set(2, `<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${pageCount} >>`);
+  objects.set(fontObjNum, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+
+  const header = '%PDF-1.4\n';
+  let body = '';
+  /** @type {number[]} */
+  const offsets = [0];
+  for (let objNum = 1; objNum <= fontObjNum; objNum += 1) {
+    offsets[objNum] = Buffer.byteLength(header + body, 'utf8');
+    body += `${objNum} 0 obj\n${objects.get(objNum) ?? '<<>>'}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(header + body, 'utf8');
+  let xref = `xref\n0 ${fontObjNum + 1}\n`;
+  xref += '0000000000 65535 f \n';
+  for (let objNum = 1; objNum <= fontObjNum; objNum += 1) {
+    xref += `${String(offsets[objNum]).padStart(10, '0')} 00000 n \n`;
+  }
+  const trailer = `trailer\n<< /Size ${fontObjNum + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(`${header}${body}${xref}${trailer}`, 'utf8');
+}
+
+/**
+ * @param {string} value
+ */
 function asTrimmedString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -107,6 +169,8 @@ export async function runMarker(opts) {
 
   const inputPath = join(opts.outDir, '_marker-input.txt');
   await writeFile(inputPath, opts.source, 'utf8');
+  const sourcePdfPath = join(opts.outDir, '_marker-input.pdf');
+  await writeFile(sourcePdfPath, buildDeterministicPdf(opts.source));
 
   const startedAt = performance.now();
   let stdout = '';
@@ -156,7 +220,8 @@ export async function runMarker(opts) {
       chunks: chunksPath,
       markerHtml: markerHtmlPath,
       imagesDir,
-      imageFiles: imagePaths
+      imageFiles: imagePaths,
+      sourcePdf: sourcePdfPath
     },
     markerJson,
     chunks,

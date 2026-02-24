@@ -56,7 +56,8 @@ export async function ingestDocument(opts) {
       memo: memoPath,
       markerMd: markerResult.paths.markerMarkdown,
       markerHtml: markerResult.paths.markerHtml,
-      imagesDir: markerResult.paths.imagesDir
+      imagesDir: markerResult.paths.imagesDir,
+      sourcePdf: markerResult.paths.sourcePdf
     },
     markerJson: markerResult.markerJson,
     marker: markerResult.marker,

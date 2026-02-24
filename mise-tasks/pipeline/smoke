@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+command -v "${PDFTOPPM_BIN:-pdftoppm}" >/dev/null || { echo "missing ${PDFTOPPM_BIN:-pdftoppm} (poppler-utils)"; exit 1; }
 mise x node@24.13.1 -- node --test packages/pipeline/test/smoke.integration.test.mjs
 mkdir -p .cache
 date +%s > .cache/test-pipeline-smoke.stamp

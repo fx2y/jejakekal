@@ -182,6 +182,30 @@ export async function listOcrPagesByJob(client, jobId) {
 }
 
 /**
+ * @param {import('pg').Client} client
+ * @param {{job_id:string,page_idx:number,status:string,png_uri:string,png_sha:string}} row
+ */
+export async function updateOcrPageRender(client, row) {
+  const result = await client.query(
+    `UPDATE ocr_page
+     SET status = $3, png_uri = $4, png_sha = $5
+     WHERE job_id = $1 AND page_idx = $2
+     RETURNING job_id, page_idx, status, gate_score, gate_reasons, png_uri, png_sha, raw_uri, raw_sha, created_at`,
+    [
+      assertNonEmptyString(row.job_id, 'job_id'),
+      assertNonNegativeInt(row.page_idx, 'page_idx'),
+      assertNonEmptyString(row.status, 'status'),
+      assertNonEmptyString(row.png_uri, 'png_uri'),
+      assertSha256(row.png_sha, 'png_sha')
+    ]
+  );
+  if (!result.rows[0]) {
+    throw new Error('ocr_page_not_found');
+  }
+  return mapOcrPageRow(result.rows[0]);
+}
+
+/**
  * @param {Record<string, unknown>} row
  */
 export function mapOcrJobRow(row) {
