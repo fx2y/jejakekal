@@ -15,7 +15,7 @@ import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { listZipEntries } from '../../../packages/core/src/deterministic-zip.mjs';
 import { parseArtifactUri } from '../src/artifact-uri.mjs';
 import { createS3BlobStore, defaultS3BlobStoreConfig } from '../src/blob/s3-store.mjs';
-import { queryRankedBlocksByTsQuery } from '../src/search/block-repository.mjs';
+import { queryRankedBlocksByTsQuery } from '../src/retrieval/service.mjs';
 import { closeServer, listenLocal } from '../src/http.mjs';
 import { exportRunBundle } from '../src/export-run.mjs';
 import { deriveHardDocWorkflowId } from '../src/runs-service.mjs';
@@ -1119,13 +1119,21 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
   assert.equal(blockRows.rows.every((row) => typeof row.block_sha === 'string' && row.block_sha.length === 64), true);
   assert.equal(blockRows.rows.every((row) => row.tsv != null), true);
 
-  const hits = await queryRankedBlocksByTsQuery(client, { query: 'invoice', limit: 20 });
+  const hits = await queryRankedBlocksByTsQuery(client, {
+    query: 'invoice',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
   assert.equal(hits.length >= 1, true);
   assert.equal(
     hits.every((row, index) => index === 0 || row.rank <= hits[index - 1].rank),
     true
   );
-  const misses = await queryRankedBlocksByTsQuery(client, { query: 'nonexistenttoken', limit: 20 });
+  const misses = await queryRankedBlocksByTsQuery(client, {
+    query: 'nonexistenttoken',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
   assert.deepEqual(misses, []);
 });
 

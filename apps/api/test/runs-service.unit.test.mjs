@@ -81,6 +81,22 @@ test('runs-service: source-intent args support additive locator/mime for hard-do
   });
 });
 
+test('runs-service: source-intent args preserve additive retrieval scope payload', () => {
+  const normalized = normalizeRunStartPayload({
+    intent: 'doc',
+    args: {
+      source: 'invoice text',
+      ns: ['tenant-b', 'tenant-a'],
+      acl: { user: 'u-1' }
+    }
+  });
+  assert.deepEqual(normalized.args, {
+    source: 'invoice text',
+    ns: ['tenant-a', 'tenant-b'],
+    acl: { user: 'u-1' }
+  });
+});
+
 test('runs-service: normalize payload preserves client ocrPolicy override object', () => {
   const normalized = normalizeRunStartPayload({
     intent: 'doc',

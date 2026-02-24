@@ -1,15 +1,4 @@
-const DEFAULT_FTS_LANGUAGE = 'english';
-
-/**
- * @param {string|undefined} value
- */
-function resolveFtsLanguage(value) {
-  const normalized = String(value ?? DEFAULT_FTS_LANGUAGE).trim().toLowerCase();
-  if (normalized !== 'english') {
-    throw new Error('invalid_fts_language');
-  }
-  return normalized;
-}
+import { resolveFtsLanguage } from '../retrieval/lanes/lexical.mjs';
 
 /**
  * @param {unknown} value
@@ -80,14 +69,15 @@ export async function populateBlockTsv(client, params) {
 
 /**
  * @param {import('pg').Client} client
- * @param {{query:string, language?:string, limit?:number}} params
+ * SQL adapter only: lexical lane candidate query against the legacy block ledger.
+ * @param {{query:string, language:string, limit:number}} params
  */
-export async function queryRankedBlocksByTsQuery(client, params) {
-  const language = resolveFtsLanguage(params.language);
+export async function queryLexicalLaneRows(client, params) {
   const query = String(params.query ?? '').trim();
   if (!query) {
     return [];
   }
+  const language = resolveFtsLanguage(params.language);
   const limit = Math.max(1, Math.min(200, Math.trunc(Number(params.limit ?? 50))));
   const result = await client.query(
     `SELECT doc_id, ver, block_id, ts_rank(tsv, q) AS rank

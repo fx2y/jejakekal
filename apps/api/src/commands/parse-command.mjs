@@ -25,6 +25,33 @@ function normalizeOptionalString(value) {
 /**
  * @param {unknown} value
  */
+function normalizeOptionalNamespaceList(value) {
+  if (value == null) return undefined;
+  const raw = Array.isArray(value) ? value : [value];
+  if (raw.length < 1) {
+    throw badRequest('invalid_run_payload');
+  }
+  const names = [...new Set(raw.map((entry) => normalizeOptionalString(entry)).filter(Boolean))].sort();
+  if (names.length < 1) {
+    throw badRequest('invalid_run_payload');
+  }
+  return names;
+}
+
+/**
+ * @param {unknown} value
+ */
+function normalizeOptionalAclObject(value) {
+  if (value == null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw badRequest('invalid_run_payload');
+  }
+  return /** @type {Record<string, unknown>} */ (value);
+}
+
+/**
+ * @param {unknown} value
+ */
 function normalizeArgsObject(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return /** @type {Record<string, unknown>} */ (value);
@@ -41,13 +68,17 @@ function normalizeIntentArgs(intent, args) {
     const source = normalizeOptionalString(args.source);
     const locator = normalizeOptionalString(args.locator);
     const mime = normalizeOptionalString(args.mime)?.toLowerCase();
+    const ns = normalizeOptionalNamespaceList(args.ns);
+    const acl = normalizeOptionalAclObject(args.acl);
     if (!source && !locator) {
       throw badRequest('invalid_run_payload');
     }
     return {
       ...(source ? { source } : {}),
       ...(locator ? { locator } : {}),
-      ...(mime ? { mime } : {})
+      ...(mime ? { mime } : {}),
+      ...(ns ? { ns } : {}),
+      ...(acl ? { acl } : {})
     };
   }
   if (intent === 'run') {

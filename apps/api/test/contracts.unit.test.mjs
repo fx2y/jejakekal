@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  API_TOP_LEVEL_ROUTE_PREFIXES,
   ARTIFACT_TYPE_VOCABULARY,
+  RETRIEVAL_SURFACE_DECISION,
   RUN_PROJECTION_FROZEN_KEYS,
   RUNS_COMPAT_WINDOW_END,
   assertFrozenArtifactType
@@ -20,6 +22,19 @@ test('contracts: frozen artifact vocabulary is explicit and strict', () => {
 test('contracts: run projection frozen keys remain stable', () => {
   assert.deepEqual(RUN_PROJECTION_FROZEN_KEYS, ['run_id', 'status', 'dbos_status', 'header', 'timeline']);
   assert.equal(Object.isFrozen(RUN_PROJECTION_FROZEN_KEYS), true);
+});
+
+test('contracts: top-level API surface remains frozen', () => {
+  assert.deepEqual(API_TOP_LEVEL_ROUTE_PREFIXES, ['/runs', '/artifacts', '/healthz']);
+  assert.equal(Object.isFrozen(API_TOP_LEVEL_ROUTE_PREFIXES), true);
+});
+
+test('contracts: retrieval route decision stays internal/runs-scoped', () => {
+  assert.deepEqual(RETRIEVAL_SURFACE_DECISION, {
+    strategy: 'internal_first_runs_scoped_only',
+    allowed_http_prefixes: ['/runs'],
+    blocked_top_level_prefixes: ['/search']
+  });
 });
 
 test('contracts: compat window reminder is date-pinned', () => {

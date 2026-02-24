@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { makeClient } from '../apps/api/src/db.mjs';
-import { queryRankedBlocksByTsQuery } from '../apps/api/src/search/block-repository.mjs';
+import { queryRankedBlocksByTsQuery } from '../apps/api/src/retrieval/service.mjs';
 import { percentile, postRun, resetBenchState, waitForRunTerminal, withApiServer } from './bench-lib.mjs';
 
 const BENCH_RUNS = 80;
@@ -23,7 +23,11 @@ async function main() {
       const runs = [];
       for (let i = 0; i < BENCH_RUNS; i += 1) {
         const start = performance.now();
-        const rows = await queryRankedBlocksByTsQuery(client, { query: QUERY, limit: 25 });
+        const rows = await queryRankedBlocksByTsQuery(client, {
+          query: QUERY,
+          limit: 25,
+          scope: { namespaces: ['default'] }
+        });
         runs.push(performance.now() - start);
         if (!Array.isArray(rows) || rows.length === 0) {
           throw new Error('bench_query_empty_result');
