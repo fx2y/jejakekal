@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+bash mise-tasks/internal/require-filer-pair
 docker compose -f infra/compose/docker-compose.yml up -d
 healthy=0
 master_port="${SEAWEED_MASTER_PORT:-9333}"

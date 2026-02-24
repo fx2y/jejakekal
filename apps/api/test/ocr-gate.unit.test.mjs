@@ -36,3 +36,17 @@ test('ocr gate: stable score ordering + deterministic cap', () => {
   assert.ok(capped.score_by_page[3] >= capped.score_by_page[2]);
 });
 
+test('ocr gate: sparse marker page numbers keep original 0-based index mapping', () => {
+  const sparse = computeHardPages(
+    {
+      blocks: [
+        { page: 1, type: 'text', text: 'x'.repeat(64) },
+        { page: 3, type: 'image', text: '' }
+      ]
+    },
+    { threshold: 0.9, maxPages: 10 }
+  );
+  assert.deepEqual(sparse.hard_pages, [2]);
+  assert.equal(typeof sparse.score_by_page[2], 'number');
+  assert.deepEqual(sparse.reasons['2'], ['image_heavy', 'low_text_density']);
+});

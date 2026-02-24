@@ -1,5 +1,6 @@
 import { assertValidRunId } from '../run-id.mjs';
 import { assertValidArtifactId } from './artifact-id.mjs';
+import { assertFrozenArtifactType } from '../contracts.mjs';
 
 /**
  * @param {any} value
@@ -18,7 +19,7 @@ function toJsonObject(value) {
 export async function insertArtifact(client, row) {
   const id = assertValidArtifactId(row.id, 'artifact_id');
   const runId = assertValidRunId(row.run_id, 'run_id');
-  const type = assertValidArtifactId(row.type, 'artifact_type');
+  const type = assertFrozenArtifactType(assertValidArtifactId(row.type, 'artifact_type'));
   const result = await client.query(
     `INSERT INTO artifact (id, run_id, type, format, uri, sha256, title, status, visibility, supersedes_id, prov)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)

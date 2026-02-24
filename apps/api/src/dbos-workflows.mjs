@@ -132,7 +132,6 @@ async function reserveDocStep(input) {
       markerConfigSha: MARKER_CONFIG_PLACEHOLDER_SHA
     });
     return {
-      source: input.source,
       raw_sha: reserved.rawSha,
       doc_id: reserved.docId,
       ver: reserved.version,
@@ -695,6 +694,47 @@ async function runS4ToS5Pause(pauseAfterS4Ms) {
 }
 
 /**
+ * @param {unknown} value
+ */
+function toPageIdx0(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
+/**
+ * @param {unknown} value
+ */
+function toSortedPageIdx0(value) {
+  const pages = Array.isArray(value) ? value : [];
+  return [...new Set(pages.map((page) => toPageIdx0(page)).filter((page) => page != null))].sort((a, b) => a - b);
+}
+
+/**
+ * @param {{score_by_page?: unknown, reasons?: unknown, hard_pages?: unknown}} gate
+ */
+function collectGatePageIndexes(gate) {
+  const scoreByPage = Array.isArray(gate.score_by_page) ? gate.score_by_page : [];
+  const reasonObject =
+    gate.reasons && typeof gate.reasons === 'object' && !Array.isArray(gate.reasons)
+      ? /** @type {Record<string, unknown>} */ (gate.reasons)
+      : {};
+  const pages = new Set(toSortedPageIdx0(gate.hard_pages));
+  for (let pageIdx = 0; pageIdx < scoreByPage.length; pageIdx += 1) {
+    if (Number.isFinite(Number(scoreByPage[pageIdx]))) {
+      pages.add(pageIdx);
+    }
+  }
+  for (const key of Object.keys(reasonObject)) {
+    const pageIdx = toPageIdx0(key);
+    if (pageIdx != null) pages.add(pageIdx);
+  }
+  return [...pages].sort((a, b) => a - b);
+}
+
+/**
  * @param {{workflowId:string,docId:string,version:number,markerJson:unknown,ocrPolicy?:Record<string, unknown>}} input
  */
 async function persistOcrGateStep(input) {
@@ -717,7 +757,7 @@ async function persistOcrGateStep(input) {
         }
       });
       const hardSet = new Set(gate.hard_pages);
-      for (let pageIdx = 0; pageIdx < gate.score_by_page.length; pageIdx += 1) {
+      for (const pageIdx of collectGatePageIndexes(gate)) {
         await upsertOcrPage(client, {
           job_id: input.workflowId,
           page_idx: pageIdx,
@@ -760,19 +800,28 @@ async function runS5PersistOcrGate(input) {
  * @param {{workflowId:string,docId:string,version:number,pdfPath?:string,hardPages:number[]}} input
  */
 async function renderAndStoreOcrPagesStep(input) {
-  const rendered = await runOcrRenderSeam({
-    hard_pages: input.hardPages,
-    pdf_path: input.pdfPath
-  });
-  if (!Array.isArray(rendered.pages) || rendered.pages.length < 1) {
+  const requestedPages = toSortedPageIdx0(input.hardPages);
+  if (requestedPages.length < 1) {
     return { rendered_pages: [] };
   }
+  const rendered = await runOcrRenderSeam({
+    hard_pages: requestedPages,
+    pdf_path: input.pdfPath
+  });
+  if (!Array.isArray(rendered.pages) || rendered.pages.length !== requestedPages.length) {
+    throw new Error('ocr_render_page_count_mismatch');
+  }
+  const requestedPageSet = new Set(requestedPages);
   const store = getS3BlobStore();
   /** @type {Array<{page_idx:number,png_uri:string,png_sha:string,effect_replayed:boolean}>} */
   const persisted = [];
   for (const page of rendered.pages) {
-    if (!Buffer.isBuffer(page.png) || typeof page.png_sha !== 'string') {
-      continue;
+    if (
+      !Buffer.isBuffer(page.png) ||
+      typeof page.png_sha !== 'string' ||
+      !requestedPageSet.has(Number(page.page_idx))
+    ) {
+      throw new Error('ocr_render_page_invalid');
     }
     const objectKey = buildRunObjectKey({
       runId: input.workflowId,
@@ -803,6 +852,9 @@ async function renderAndStoreOcrPagesStep(input) {
       png_sha: String(effect.response.png_sha),
       effect_replayed: effect.replayed
     });
+  }
+  if (persisted.length !== requestedPages.length) {
+    throw new Error('ocr_render_page_count_mismatch');
   }
   return withAppClient(async (client) => {
     await client.query('BEGIN');
@@ -869,12 +921,10 @@ async function persistOcrPagesStep(input) {
       : null;
   /** @type {Array<{page_idx:number,raw_uri:string,raw_sha:string,patch_sha:string,patch:Record<string, unknown>,effect_replayed:boolean}>} */
   const persisted = [];
-  let invalidRenderedRows = 0;
 
   for (const page of input.renderedPages ?? []) {
     if (typeof page.png_uri !== 'string' || typeof page.png_sha !== 'string') {
-      invalidRenderedRows += 1;
-      continue;
+      throw new Error('ocr_rendered_page_invalid');
     }
     const effectKey = buildOcrPageEffectKey({
       workflowId: input.workflowId,
@@ -990,7 +1040,7 @@ async function persistOcrPagesStep(input) {
       await client.query('COMMIT');
       return {
         ocr_pages: pages,
-        ocr_failures: invalidRenderedRows,
+        ocr_failures: 0,
         ocr_model: ocrModel
       };
     } catch (error) {

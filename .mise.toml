@@ -29,7 +29,13 @@ PDFTOPPM_BIN = "pdftoppm"
 
 [tasks.verify]
 description = "L1 quick gate"
-run = ["mise run lint", "mise run typecheck", "mise run test:unit", "mise run test:workflow"]
+run = [
+  "bash mise-tasks/internal/require-filer-pair",
+  "mise run lint",
+  "mise run typecheck",
+  "mise run test:unit",
+  "mise run test:workflow"
+]
 
 [tasks."pre-commit"]
 run = "mise run verify"
@@ -37,6 +43,7 @@ run = "mise run verify"
 [tasks.ci]
 description = "CI parity entrypoint"
 run = [
+  "bash mise-tasks/internal/require-filer-pair",
   "mise run verify",
   "mise run test:replay",
   "mise run test:idempotency",

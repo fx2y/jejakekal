@@ -18,7 +18,7 @@ test('ocr config: defaults are deterministic and pinned', () => {
 test('ocr config: env override parsing is strict', () => {
   const policy = resolveOcrPolicy({
     OCR_ENABLED: '0',
-    OCR_ENGINE: 'ollama',
+    OCR_ENGINE: 'vllm',
     OCR_MODEL: 'glm-ocr-mini',
     OCR_BASE_URL: 'http://127.0.0.1:11434',
     OCR_TIMEOUT_MS: '30000',
@@ -26,7 +26,7 @@ test('ocr config: env override parsing is strict', () => {
   });
   assert.deepEqual(policy, {
     enabled: false,
-    engine: 'ollama',
+    engine: 'vllm',
     model: 'glm-ocr-mini',
     baseUrl: 'http://127.0.0.1:11434',
     timeoutMs: 30000,
@@ -36,6 +36,9 @@ test('ocr config: env override parsing is strict', () => {
 
 test('ocr config: invalid engine and timeout fail closed', () => {
   assert.throws(() => resolveOcrPolicy({ OCR_ENGINE: 'unknown' }), {
+    message: 'invalid_ocr_policy_engine'
+  });
+  assert.throws(() => resolveOcrPolicy({ OCR_ENGINE: 'ollama' }), {
     message: 'invalid_ocr_policy_engine'
   });
   assert.throws(() => resolveOcrPolicy({ OCR_TIMEOUT_MS: '0' }), {

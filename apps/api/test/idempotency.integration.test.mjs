@@ -103,7 +103,11 @@ test('store-raw retry after post-effect failure replays idempotent effect respon
   const outputs = await readOperationOutputs(client, workflowId);
   const storeRaw = outputs.find((row) => row.function_name === 'store-raw');
   assert.ok(storeRaw);
-  assert.equal(storeRaw.output?.effect_replayed, true);
+  const storeRawOutput =
+    storeRaw.output && typeof storeRaw.output === 'object' && !Array.isArray(storeRaw.output)
+      ? /** @type {Record<string, unknown>} */ (storeRaw.output)
+      : {};
+  assert.equal(storeRawOutput.effect_replayed, true);
 
   const countRes = await client.query(
     `SELECT COUNT(*)::int AS c
@@ -178,7 +182,11 @@ test('OCR retry after post-effect failure replays per-page OCR side effects', as
   const outputs = await readOperationOutputs(client, workflowId);
   const ocrStep = outputs.find((row) => row.function_name === 'ocr-pages');
   assert.ok(ocrStep);
-  const pages = Array.isArray(ocrStep.output?.ocr_pages) ? ocrStep.output.ocr_pages : [];
+  const ocrOutput =
+    ocrStep.output && typeof ocrStep.output === 'object' && !Array.isArray(ocrStep.output)
+      ? /** @type {Record<string, unknown>} */ (ocrStep.output)
+      : {};
+  const pages = Array.isArray(ocrOutput.ocr_pages) ? ocrOutput.ocr_pages : [];
   assert.ok(pages.length >= 1);
   assert.ok(pages.some((row) => row.effect_replayed === true));
 

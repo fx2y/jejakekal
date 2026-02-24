@@ -16,6 +16,22 @@ function parseDbosCell(value) {
 }
 
 /**
+ * Strip control-plane payload leaks from timeline outputs.
+ * @param {string} functionName
+ * @param {unknown} output
+ */
+function sanitizeOutput(functionName, output) {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return output;
+  if (functionName !== 'reserve-doc') return output;
+  const row = /** @type {Record<string, unknown>} */ (output);
+  if (!Object.prototype.hasOwnProperty.call(row, 'source')) {
+    return output;
+  }
+  const { source: _discarded, ...rest } = row;
+  return rest;
+}
+
+/**
  * @param {unknown} output
  */
 function readAttempt(output) {
@@ -76,12 +92,13 @@ export function mapWorkflowStatusRow(row) {
 export function mapOperationOutputRow(row) {
   const startedAt = row.started_at_epoch_ms == null ? null : Number(row.started_at_epoch_ms);
   const completedAt = row.completed_at_epoch_ms == null ? null : Number(row.completed_at_epoch_ms);
-  const output = parseDbosCell(row.output);
+  const functionName = String(row.function_name);
+  const output = sanitizeOutput(functionName, parseDbosCell(row.output));
   const error = parseDbosCell(row.error);
   return {
     workflow_uuid: String(row.workflow_uuid),
     function_id: Number(row.function_id),
-    function_name: String(row.function_name),
+    function_name: functionName,
     started_at_epoch_ms: startedAt,
     completed_at_epoch_ms: completedAt,
     duration_ms:

@@ -81,6 +81,29 @@ test('runs-service: source-intent args support additive locator/mime for hard-do
   });
 });
 
+test('runs-service: normalize payload preserves client ocrPolicy override object', () => {
+  const normalized = normalizeRunStartPayload({
+    intent: 'doc',
+    args: { source: 'sample.pdf', mime: 'application/pdf' },
+    ocrPolicy: {
+      enabled: true,
+      engine: 'vllm',
+      model: 'zai-org/GLM-OCR',
+      baseUrl: 'http://127.0.0.1:8000',
+      timeoutMs: 5000,
+      maxPages: 2
+    }
+  });
+  assert.deepEqual(normalized.ocrPolicy, {
+    enabled: true,
+    engine: 'vllm',
+    model: 'zai-org/GLM-OCR',
+    baseUrl: 'http://127.0.0.1:8000',
+    timeoutMs: 5000,
+    maxPages: 2
+  });
+});
+
 test('runs-service: hard-doc start plan derives deterministic workflowId + timeout budget', () => {
   const params = {
     intent: 'doc',
@@ -131,6 +154,31 @@ test('runs-service: invalid OCR policy from client input fails typed 400', async
     {
       name: 'RequestError',
       payload: { error: 'invalid_run_payload', field: 'ocrPolicy' }
+    }
+  );
+});
+
+test('runs-service: non-vllm OCR policy is rejected with engine field error', async () => {
+  await assert.rejects(
+    () =>
+      startRunDurably(
+        /** @type {import('pg').Client} */ ({}),
+        {
+          intent: 'doc',
+          args: { source: 'abc' },
+          ocrPolicy: {
+            enabled: true,
+            engine: 'ollama',
+            model: 'glm',
+            baseUrl: 'http://127.0.0.1:11434',
+            timeoutMs: 1000,
+            maxPages: 1
+          }
+        }
+      ),
+    {
+      name: 'RequestError',
+      payload: { error: 'invalid_run_payload', field: 'ocrPolicy.engine' }
     }
   );
 });

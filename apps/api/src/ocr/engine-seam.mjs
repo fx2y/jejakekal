@@ -174,27 +174,11 @@ export async function runOcrEngineSeam(params) {
   /** @type {Array<{page_idx:number,text_md:string,tables?:unknown[],confidence?:number|null,engine_meta:Record<string,unknown>,raw:unknown}>} */
   const patches = [];
   for (const row of params.pages ?? []) {
-    if (
-      typeof row.doc_id !== 'string' ||
-      !Number.isInteger(row.ver) ||
-      typeof row.page_idx !== 'number' ||
-      typeof row.png_uri !== 'string'
-    ) {
-      patches.push({
-        page_idx: Number(row.page_idx ?? 0),
-        text_md: '',
-        tables: [],
-        confidence: null,
-        engine_meta: {},
-        raw: null
-      });
-      continue;
-    }
     const pageIn = normalizeOcrPageIn({
-      doc_id: row.doc_id,
-      ver: row.ver,
-      page_idx: row.page_idx,
-      image_uri: row.png_uri,
+      doc_id: row?.doc_id,
+      ver: row?.ver,
+      page_idx: row?.page_idx,
+      image_uri: row?.png_uri,
       prompt: row.prompt ?? OCR_PROMPT
     });
     const out = await callOcrVllm({

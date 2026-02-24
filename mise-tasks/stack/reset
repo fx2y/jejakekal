@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+bash mise-tasks/internal/require-filer-pair
 docker compose -f infra/compose/docker-compose.yml exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
 DROP DATABASE IF EXISTS jejakekal;
 CREATE DATABASE jejakekal;

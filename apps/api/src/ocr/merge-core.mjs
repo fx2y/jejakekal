@@ -206,11 +206,14 @@ export function computeOcrMergePlan(params) {
   const pageDiffs = [];
   /** @type {Array<{block_id:string,type:string,page:number,bbox:Array<number>|null,text:string|null,data:Record<string, unknown>,block_sha:string}>} */
   const replacementBlocks = [];
-  const mergedPages = [...hardPages].sort((a, b) => a - b);
+  const mergedPages = [...hardPages]
+    .filter((pageIdx) => patchByPage.has(pageIdx))
+    .sort((a, b) => a - b);
 
   for (const pageIdx of mergedPages) {
     const markerBlocks = markerByPage.get(pageIdx) ?? [];
-    const patch = patchByPage.get(pageIdx) ?? {};
+    const patch = patchByPage.get(pageIdx);
+    if (!patch) continue;
     const ocrBlocks = buildOcrBlocksForPage({
       docId: params.docId,
       version: params.version,
@@ -238,6 +241,7 @@ export function computeOcrMergePlan(params) {
     const beforeHash = hashBlockShaSet(markerBlocks);
     const afterHash = hashBlockShaSet(afterBlocks);
     const changedBlocks = countChangedBlocks(markerBlocks, afterBlocks);
+    if (changedBlocks < 1) continue;
     const diffSha = sha256(
       JSON.stringify({
         page: pageIdx,
@@ -252,9 +256,10 @@ export function computeOcrMergePlan(params) {
       changed_blocks: changedBlocks,
       diff_sha: diffSha
     });
-    replacementBlocks.push(...afterBlocks.filter((row) => Number(row.source_rank ?? 1) === 0));
+    replacementBlocks.push(...afterBlocks);
   }
 
+  const settledMergedPages = pageDiffs.map((row) => row.page_idx).sort((a, b) => a - b);
   const summary = pageDiffs.map((row) => ({
     page_idx: row.page_idx,
     before_sha: row.before_sha,
@@ -264,7 +269,7 @@ export function computeOcrMergePlan(params) {
   }));
   const diffSha = summary.length > 0 ? sha256(JSON.stringify(summary)) : null;
   return {
-    merged_pages: mergedPages,
+    merged_pages: settledMergedPages,
     replacement_blocks: replacementBlocks.map((row) => ({
       block_id: row.block_id,
       type: row.type,

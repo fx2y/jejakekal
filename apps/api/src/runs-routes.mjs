@@ -30,10 +30,11 @@ export async function handleRunsRoute(req, res, ctx) {
 
   if (req.method === 'POST' && pathname === '/runs') {
     const payload = normalizeRunStartPayload(await readJsonRequest(req));
+    const effectiveOcrPolicy = payload.ocrPolicy ?? ctx.ocrPolicy;
     const { runId } = await startRunDurably(ctx.client, {
       ...payload,
       bundlesRoot: ctx.bundlesRoot,
-      ocrPolicy: ctx.ocrPolicy
+      ocrPolicy: effectiveOcrPolicy
     });
     await insertChatEvent(ctx.client, { cmd: payload.cmd, args: payload.args, run_id: runId });
     const run = await readRun(ctx.client, runId);

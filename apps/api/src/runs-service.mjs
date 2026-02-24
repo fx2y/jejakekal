@@ -25,6 +25,17 @@ function normalizeOptionalString(value) {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/**
+ * @param {unknown} value
+ */
+function normalizeOptionalObject(value) {
+  if (value == null) return undefined;
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return /** @type {Record<string, unknown>} */ (value);
+  }
+  throw badRequest('invalid_run_payload');
+}
+
 function normalizeSleepMs(value) {
   if (value == null) return undefined;
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
@@ -134,13 +145,14 @@ export function normalizeRunStartPayload(payload) {
   const workflowId = normalizeOptionalString(body.workflowId);
   const sleepMs = normalizeSleepMs(body.sleepMs);
   const useLlm = normalizeUseLlm(body.useLlm);
+  const ocrPolicy = normalizeOptionalObject(body.ocrPolicy);
   if (typeof body.cmd === 'string') {
     const parsed = assertSourceIntentCommand(parseSlashCommand(body.cmd));
-    return { ...parsed, workflowId, sleepMs, useLlm, compat: false };
+    return { ...parsed, workflowId, sleepMs, useLlm, ocrPolicy, compat: false };
   }
   if (typeof body.intent === 'string') {
     const parsed = assertSourceIntentCommand(parseIntentPayload(body));
-    return { ...parsed, workflowId, sleepMs, useLlm, compat: false };
+    return { ...parsed, workflowId, sleepMs, useLlm, ocrPolicy, compat: false };
   }
   if (typeof body.source === 'string' && body.source.trim().length > 0) {
     const today = resolveCompatToday();
@@ -154,6 +166,7 @@ export function normalizeRunStartPayload(payload) {
       workflowId,
       sleepMs,
       useLlm,
+      ocrPolicy,
       compat: true
     };
   }
@@ -200,6 +213,9 @@ function resolveRunOcrPolicy(params) {
   } catch (error) {
     if (error?.name === 'RequestError') {
       throw error;
+    }
+    if (error instanceof Error && error.message === 'invalid_ocr_policy_engine') {
+      throw badRequest('invalid_run_payload', { field: 'ocrPolicy.engine' });
     }
     if (error instanceof Error && error.message.startsWith('invalid_ocr_policy_')) {
       throw badRequest('invalid_run_payload', { field: 'ocrPolicy' });

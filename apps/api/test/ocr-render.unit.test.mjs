@@ -52,3 +52,15 @@ test('ocr render: pdftoppm renders requested page indexes deterministically', as
     await rm(outDir, { recursive: true, force: true });
   }
 });
+
+test('ocr render seam: hard pages fail closed when source PDF is missing', async () => {
+  await assert.rejects(
+    () =>
+      runOcrRenderSeam({
+        hard_pages: [0]
+      }),
+    {
+      message: 'ocr_render_source_pdf_missing'
+    }
+  );
+});

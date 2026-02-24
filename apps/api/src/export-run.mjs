@@ -71,7 +71,7 @@ function mapPersistedArtifactsForExport(rows, bundlesRoot) {
 
 /**
  * Recover original source from DBOS step outputs.
- * C3 encodes exact input on `prepare` step output to avoid app-side shadow storage.
+ * Legacy-only fallback: modern runs intentionally avoid source text in timeline outputs.
  * @param {Array<{function_name?: string, output?: any}>} timeline
  */
 export function sourceFromRunTimeline(timeline) {

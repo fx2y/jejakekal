@@ -122,3 +122,15 @@ test('ocr engine seam: transient 503 retries then succeeds', async (t) => {
   assert.equal(attempts, 3);
   assert.equal(out.patches[0].text_md, 'ok after retry');
 });
+
+test('ocr engine seam: malformed OCR page rows fail closed', async () => {
+  await assert.rejects(
+    () =>
+      runOcrEngineSeam({
+        pages: [{ page_idx: 5 }]
+      }),
+    {
+      message: 'invalid_ocr_doc_id'
+    }
+  );
+});

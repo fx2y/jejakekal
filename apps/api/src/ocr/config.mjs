@@ -1,9 +1,9 @@
-const OCR_ENGINE_SET = new Set(['vllm', 'sglang', 'ollama']);
+const OCR_ENGINE_SET = new Set(['vllm']);
 
 /**
  * @typedef {{
  *   enabled: boolean,
- *   engine: 'vllm'|'sglang'|'ollama',
+ *   engine: 'vllm',
  *   model: string,
  *   baseUrl: string,
  *   timeoutMs: number,
@@ -41,7 +41,7 @@ function parseEngine(value) {
   if (!OCR_ENGINE_SET.has(normalized)) {
     throw new Error('invalid_ocr_policy_engine');
   }
-  return /** @type {'vllm'|'sglang'|'ollama'} */ (normalized);
+  return /** @type {'vllm'} */ (normalized);
 }
 
 /**

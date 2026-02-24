@@ -112,3 +112,32 @@ test('ocr merge: deterministic summary hash for identical inputs', () => {
   const b = computeOcrMergePlan(input);
   assert.deepEqual(a, b);
 });
+
+test('ocr merge: patchless hard pages are no-op and cannot trigger delete-only apply', () => {
+  const plan = computeOcrMergePlan({
+    docId: 'doc-3',
+    version: 1,
+    hardPages: [0],
+    currentBlocks: [
+      markerBlock({
+        block_id: 'base-1',
+        type: 'text',
+        page: 1,
+        text: 'marker stays',
+        block_sha: '3'.repeat(64)
+      }),
+      markerBlock({
+        block_id: 'base-2',
+        type: 'table',
+        page: 1,
+        text: '|a|b|',
+        block_sha: '4'.repeat(64)
+      })
+    ],
+    patches: []
+  });
+  assert.deepEqual(plan.merged_pages, []);
+  assert.deepEqual(plan.page_diffs, []);
+  assert.deepEqual(plan.replacement_blocks, []);
+  assert.equal(plan.diff_sha, null);
+});

@@ -407,6 +407,24 @@ test('C2 hard-doc branch: gate persists and rendered pages store PNG URIs/SHAs',
         row.png_sha.length === 64
     )
   );
+
+  const diffRows = await client.query(
+    `SELECT page_idx
+     FROM docir_page_diff
+     WHERE source_job_id = $1`,
+    [workflowId]
+  );
+  assert.equal(diffRows.rows.length, 0);
+
+  const mergedTextRows = await client.query(
+    `SELECT COUNT(*)::int AS count
+     FROM block
+     WHERE doc_id = $1
+       AND ver = $2
+       AND type IN ('text','table')`,
+    [jobRows.rows[0].doc_id, jobRows.rows[0].ver]
+  );
+  assert.ok(Number(mergedTextRows.rows[0]?.count ?? 0) >= 1);
 });
 
 test('C3 hard-doc branch: OCR adapter persists raw blobs + patch rows with idempotent effect keys', async (t) => {
@@ -623,6 +641,28 @@ test('C2 payload guards: no default source fallback and invalid command typed 40
   });
   assert.equal(badSleepZero.status, 400);
   assert.deepEqual(await badSleepZero.json(), { error: 'invalid_run_payload' });
+
+  const badOcrPolicyEngine = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      intent: 'doc',
+      args: { source: 'x' },
+      ocrPolicy: {
+        enabled: true,
+        engine: 'ollama',
+        model: 'glm',
+        baseUrl: 'http://127.0.0.1:11434',
+        timeoutMs: 1000,
+        maxPages: 1
+      }
+    })
+  });
+  assert.equal(badOcrPolicyEngine.status, 400);
+  assert.deepEqual(await badOcrPolicyEngine.json(), {
+    error: 'invalid_run_payload',
+    field: 'ocrPolicy.engine'
+  });
 });
 
 test('C5 hard-doc run-start: additive locator/mime routes to hard-doc workflow with deterministic workflowId', async (t) => {
@@ -834,6 +874,8 @@ test('C3 export endpoint writes additive DBOS snapshot bundle for offline recons
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.equal(run?.status, 'done');
+  const reserveOutput = run.timeline.find((row) => row.function_name === 'reserve-doc')?.output ?? {};
+  assert.equal(Object.hasOwn(reserveOutput, 'source'), false);
 
   const exportRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/export`);
   assert.equal(exportRes.status, 200);
@@ -856,7 +898,8 @@ test('C3 export endpoint writes additive DBOS snapshot bundle for offline recons
     bundle['operation_outputs.json'].map((row) => row.function_id),
     run.timeline.map((row) => row.function_id)
   );
-  assert.equal(bundle['operation_outputs.json'][0].output.source, source);
+  assert.equal(typeof bundle['operation_outputs.json'][0].output.raw_sha, 'string');
+  assert.equal(Object.hasOwn(bundle['operation_outputs.json'][0].output, 'source'), false);
   assert.ok(bundle['artifact_provenance.json']);
   assert.ok(Array.isArray(bundle['manifest.json'].artifact_refs));
   assert.ok(Array.isArray(bundle['manifest.json'].step_summaries));

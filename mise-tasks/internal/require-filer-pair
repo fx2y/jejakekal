@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+default_port="8888"
+default_endpoint="http://127.0.0.1:${default_port}"
+filer_port="${SEAWEED_FILER_PORT:-}"
+filer_endpoint="${BLOB_FILER_ENDPOINT:-}"
+
+has_port_override=0
+has_endpoint_override=0
+
+if [[ -n "$filer_port" ]]; then
+  has_port_override=1
+fi
+if [[ -n "$filer_endpoint" && "$filer_endpoint" != "$default_endpoint" ]]; then
+  has_endpoint_override=1
+fi
+
+if [[ "$has_port_override" -ne "$has_endpoint_override" ]]; then
+  echo "paired filer override required: set both SEAWEED_FILER_PORT and BLOB_FILER_ENDPOINT" >&2
+  exit 1
+fi
+
+if [[ "$has_port_override" -eq 1 ]]; then
+  if [[ ! "$filer_endpoint" =~ ^https?://[^/:]+:([0-9]+)(/.*)?$ ]]; then
+    echo "BLOB_FILER_ENDPOINT must include explicit host:port when SEAWEED_FILER_PORT override is set" >&2
+    exit 1
+  fi
+  endpoint_port="${BASH_REMATCH[1]}"
+  if [[ "$endpoint_port" != "$filer_port" ]]; then
+    echo "SEAWEED_FILER_PORT and BLOB_FILER_ENDPOINT port must match" >&2
+    exit 1
+  fi
+fi

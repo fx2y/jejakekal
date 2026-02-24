@@ -142,21 +142,21 @@ function normalizeGateConfig(gateCfg) {
 export function computeHardPages(markerJson, gateCfg) {
   const cfg = normalizeGateConfig(gateCfg);
   const pages = extractPages(markerJson);
-  const scoreByPage = pages.map(() => 0);
+  const scoreByPage = [];
   /** @type {Record<string, string[]>} */
   const reasons = {};
-  const scored = pages.map((page, pageOrder) => {
+  const scored = pages.map((page) => {
     const { score, reasons: pageReasons } = scorePage(page.blocks);
-    scoreByPage[pageOrder] = score;
-    reasons[String(pageOrder)] = [...new Set(pageReasons)].sort((a, b) => a.localeCompare(b));
-    const hard = score >= cfg.threshold || reasons[String(pageOrder)].includes('no_blocks');
-    return { pageOrder, score, hard };
+    scoreByPage[page.idx] = score;
+    reasons[String(page.idx)] = [...new Set(pageReasons)].sort((a, b) => a.localeCompare(b));
+    const hard = score >= cfg.threshold || reasons[String(page.idx)].includes('no_blocks');
+    return { pageIdx: page.idx, score, hard };
   });
   const hardPages = scored
     .filter((page) => page.hard)
-    .sort((a, b) => b.score - a.score || a.pageOrder - b.pageOrder)
+    .sort((a, b) => b.score - a.score || a.pageIdx - b.pageIdx)
     .slice(0, cfg.maxPages)
-    .map((page) => page.pageOrder)
+    .map((page) => page.pageIdx)
     .sort((a, b) => a - b);
   const code_rev = sha256(
     JSON.stringify({
@@ -182,4 +182,3 @@ export function computeHardPages(markerJson, gateCfg) {
     reasons
   };
 }
-
