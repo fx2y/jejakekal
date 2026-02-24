@@ -55,9 +55,9 @@ import { runOcrMergeSeam } from './ocr/merge-seam.mjs';
 import { embedTextDeterministic, resolveEmbeddingModel } from './retrieval/embeddings.mjs';
 
 let workflowsRegistered = false;
-/** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>) | undefined} */
+/** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown>, scope?: {namespace?:string, acl?:Record<string, unknown>}, embeddingModel:string }) => Promise<unknown>) | undefined} */
 let defaultWorkflowFn;
-/** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>) | undefined} */
+/** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown>, scope?: {namespace?:string, acl?:Record<string, unknown>}, embeddingModel:string }) => Promise<unknown>) | undefined} */
 let hardDocWorkflowFn;
 /** @type {((input: { failUntilAttempt?: number }) => Promise<unknown>) | undefined} */
 let flakyRetryWorkflowFn;
@@ -161,10 +161,16 @@ function isEmbeddableBlockRow(_row) {
 }
 
 /**
- * @param {{workflowId:string, docId:string, version:number, blocks:Array<{block_id:string, block_sha:string, text:string|null, data:Record<string, unknown>, type:string}>}} params
+ * @param {{
+ *   workflowId:string,
+ *   docId:string,
+ *   version:number,
+ *   model:string,
+ *   blocks:Array<{block_id:string, block_sha:string, text:string|null, data:Record<string, unknown>, type:string}>
+ * }} params
  */
 async function computeBlockEmbeddingsFromRows(params) {
-  const model = resolveEmbeddingModel(process.env.RETR_EMBED_MODEL);
+  const model = resolveEmbeddingModel(params.model);
   /** @type {Array<{block_id:string, emb:number[], effect_replayed:boolean}>} */
   const embeddings = [];
   const rows = [...params.blocks]
@@ -207,7 +213,7 @@ async function computeBlockEmbeddingsFromRows(params) {
 }
 
 /**
- * @param {{workflowId:string, docId:string, version:number}} params
+ * @param {{workflowId:string, docId:string, version:number, model:string}} params
  */
 async function computeDocBlockEmbeddings(params) {
   const rows = await withAppClient((client) =>
@@ -220,6 +226,7 @@ async function computeDocBlockEmbeddings(params) {
     workflowId: params.workflowId,
     docId: params.docId,
     version: params.version,
+    model: params.model,
     blocks: rows
   });
 }
@@ -529,7 +536,14 @@ async function normalizeDocirStep(input) {
 }
 
 /**
- * @param {{workflowId:string,docId:string,version:number,language?:string}} input
+ * @param {{
+ *   workflowId:string,
+ *   docId:string,
+ *   version:number,
+ *   language?:string,
+ *   scope?: {namespace?:string, acl?:Record<string, unknown>},
+ *   embeddingModel:string
+ * }} input
  */
 async function indexFtsStep(input) {
   const indexed = await withAppClient(async (client) => {
@@ -538,7 +552,8 @@ async function indexFtsStep(input) {
       const result = await populateBlockTsv(client, {
         docId: input.docId,
         version: input.version,
-        language: input.language
+        language: input.language,
+        scope: input.scope
       });
       await client.query('COMMIT');
       return result;
@@ -551,7 +566,8 @@ async function indexFtsStep(input) {
   const embedding = await computeDocBlockEmbeddings({
     workflowId: input.workflowId,
     docId: input.docId,
-    version: input.version
+    version: input.version,
+    model: input.embeddingModel
   });
 
   if (shouldFailAfterEmbedEffectOnce(input.workflowId)) {
@@ -767,7 +783,14 @@ async function runS4NormalizeDocir(input) {
 }
 
 /**
- * @param {{workflowId:string,docId:string,version:number,language?:string}} input
+ * @param {{
+ *   workflowId:string,
+ *   docId:string,
+ *   version:number,
+ *   language?:string,
+ *   scope?: {namespace?:string, acl?:Record<string, unknown>},
+ *   embeddingModel:string
+ * }} input
  */
 async function runS5IndexFts(input) {
   return DBOS.runStep(() => indexFtsStep(input), {
@@ -1230,7 +1253,9 @@ async function runS7PersistOcrPages(input) {
  *   version:number,
  *   hardPages:number[],
  *   rawSha:string,
- *   markerConfigSha:string
+ *   markerConfigSha:string,
+ *   scope?: {namespace?:string, acl?:Record<string, unknown>},
+ *   embeddingModel:string
  * }} input
  */
 async function mergeOcrIntoDocirStep(input) {
@@ -1270,6 +1295,7 @@ async function mergeOcrIntoDocirStep(input) {
       workflowId: input.workflowId,
       docId: input.docId,
       version: input.version,
+      model: input.embeddingModel,
       blocks: replacementBlocks
     });
     await client.query('BEGIN');
@@ -1328,7 +1354,8 @@ async function mergeOcrIntoDocirStep(input) {
       await populateBlockTsvForPages(client, {
         docId: input.docId,
         version: input.version,
-        pageNumbers
+        pageNumbers,
+        scope: input.scope
       });
       await replaceDocBlockEmbeddings(client, {
         docId: input.docId,
@@ -1365,7 +1392,9 @@ async function mergeOcrIntoDocirStep(input) {
  *   version:number,
  *   hardPages:number[],
  *   rawSha:string,
- *   markerConfigSha:string
+ *   markerConfigSha:string,
+ *   scope?: {namespace?:string, acl?:Record<string, unknown>},
+ *   embeddingModel:string
  * }} input
  */
 async function runS8MergeOcrDiff(input) {
@@ -1435,7 +1464,9 @@ async function hardDocWorkflowImpl(input) {
         version: ctx.reserved.ver,
         hardPages: gate.hard_pages,
         rawSha: ctx.reserved.raw_sha,
-        markerConfigSha: ctx.reserved.marker_config_sha
+        markerConfigSha: ctx.reserved.marker_config_sha,
+        scope: input.scope,
+        embeddingModel: input.embeddingModel
       });
       return { gate, rendered, ocr, merge };
     },
@@ -1498,46 +1529,72 @@ export function registerDbosWorkflows() {
 }
 
 /**
- * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, ocrPolicy?: Record<string, unknown>, timeoutMs?: number}} params
+ * @param {{
+ *   workflowId?: string,
+ *   value: string,
+ *   sleepMs?: number,
+ *   bundlesRoot?: string,
+ *   useLlm?: boolean,
+ *   ocrPolicy?: Record<string, unknown>,
+ *   timeoutMs?: number,
+ *   scope?: {namespace?:string, acl?:Record<string, unknown>},
+ *   embeddingModel?: string
+ * }} params
  */
 export async function startDefaultWorkflowRun(params) {
   registerDbosWorkflows();
   const workflowFn =
-    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>} */ (
+    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown>, scope?: {namespace?:string, acl?:Record<string, unknown>}, embeddingModel:string }) => Promise<unknown>} */ (
       defaultWorkflowFn
     );
   const pauseAfterS4Ms = normalizeOptionalPauseMs(process.env.JEJAKEKAL_PAUSE_AFTER_S4_MS);
   const bundlesRoot = resolveWorkflowBundlesRoot(params.bundlesRoot);
   const ocrPolicy = params.ocrPolicy ?? resolveOcrPolicy(process.env);
+  const embeddingModel = resolveEmbeddingModel(params.embeddingModel ?? process.env.RETR_EMBED_MODEL);
   return startWorkflowWithConflictRecovery(workflowFn, params, {
     value: params.value,
     sleepMs: params.sleepMs,
     bundlesRoot,
     useLlm: params.useLlm,
     pauseAfterS4Ms,
-    ocrPolicy
+    ocrPolicy,
+    scope: params.scope,
+    embeddingModel
   });
 }
 
 /**
- * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, ocrPolicy?: Record<string, unknown>, timeoutMs?: number}} params
+ * @param {{
+ *   workflowId?: string,
+ *   value: string,
+ *   sleepMs?: number,
+ *   bundlesRoot?: string,
+ *   useLlm?: boolean,
+ *   ocrPolicy?: Record<string, unknown>,
+ *   timeoutMs?: number,
+ *   scope?: {namespace?:string, acl?:Record<string, unknown>},
+ *   embeddingModel?: string
+ * }} params
  */
 export async function startHardDocWorkflowRun(params) {
   registerDbosWorkflows();
   const workflowFn =
-    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>} */ (
+    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown>, scope?: {namespace?:string, acl?:Record<string, unknown>}, embeddingModel:string }) => Promise<unknown>} */ (
       hardDocWorkflowFn
     );
   const pauseAfterS4Ms = normalizeOptionalPauseMs(process.env.JEJAKEKAL_PAUSE_AFTER_S4_MS);
   const bundlesRoot = resolveWorkflowBundlesRoot(params.bundlesRoot);
   const ocrPolicy = params.ocrPolicy ?? resolveOcrPolicy(process.env);
+  const embeddingModel = resolveEmbeddingModel(params.embeddingModel ?? process.env.RETR_EMBED_MODEL);
   return startWorkflowWithConflictRecovery(workflowFn, params, {
     value: params.value,
     sleepMs: params.sleepMs,
     bundlesRoot,
     useLlm: params.useLlm,
     pauseAfterS4Ms,
-    ocrPolicy
+    ocrPolicy,
+    scope: params.scope,
+    embeddingModel
   });
 }
 

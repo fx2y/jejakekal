@@ -5,7 +5,6 @@ import { badRequest, conflict } from './request-errors.mjs';
 import { assertValidRunId } from './run-id.mjs';
 import {
   SOURCE_INTENTS,
-  commandToWorkflowValue,
   parseIntentPayload,
   parseSlashCommand
 } from './commands/parse-command.mjs';
@@ -53,13 +52,31 @@ function normalizeUseLlm(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function sortDeep(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortDeep(item));
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const key of Object.keys(/** @type {Record<string, unknown>} */ (value)).sort((a, b) => a.localeCompare(b))) {
+      out[key] = sortDeep(/** @type {Record<string, unknown>} */ (value)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
  * @param {{intent: string, args: Record<string, unknown>, sleepMs?: number, useLlm?: boolean}} params
  */
 function makeInputHash(params) {
   return sha256(
     JSON.stringify({
       intent: params.intent,
-      args: params.args
+      args: sortDeep(params.args)
     })
   );
 }
@@ -71,7 +88,14 @@ function normalizeSourceArgs(args) {
   const source = normalizeOptionalString(args.source);
   const locator = normalizeOptionalString(args.locator);
   const mime = normalizeOptionalString(args.mime)?.toLowerCase();
-  return { source, locator, mime };
+  const namespaces = Array.isArray(args.ns)
+    ? [...new Set(args.ns.map((entry) => normalizeOptionalString(entry)).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+    : [];
+  const acl =
+    args.acl && typeof args.acl === 'object' && !Array.isArray(args.acl)
+      ? /** @type {Record<string, unknown>} */ (sortDeep(args.acl))
+      : {};
+  return { source, locator, mime, namespaces, acl };
 }
 
 /**
@@ -89,7 +113,7 @@ export function isHardDocRun(params) {
  * @param {{intent:string,args:Record<string,unknown>}} params
  */
 export function deriveHardDocWorkflowId(params) {
-  const digest = sha256(JSON.stringify({ intent: params.intent, args: params.args }));
+  const digest = sha256(JSON.stringify({ intent: params.intent, args: sortDeep(params.args) }));
   return `${HARDDOC_WORKFLOW_PREFIX}:${digest}`;
 }
 
@@ -177,8 +201,25 @@ export function normalizeRunStartPayload(payload) {
  * @param {{intent:string, args:Record<string, unknown>}} command
  */
 function toWorkflowInput(command) {
+  if (!SOURCE_INTENT_SET.has(command.intent)) {
+    return {
+      value: JSON.stringify({ intent: command.intent, args: command.args })
+    };
+  }
+  const normalized = normalizeSourceArgs(command.args);
+  const value = normalized.source ?? normalized.locator;
+  if (!value) {
+    throw badRequest('invalid_run_payload');
+  }
+  if (normalized.namespaces.length > 1) {
+    throw badRequest('invalid_run_payload', { field: 'args.ns' });
+  }
   return {
-    value: commandToWorkflowValue(command)
+    value,
+    scope: {
+      namespace: normalized.namespaces[0] ?? 'default',
+      acl: normalized.acl
+    }
   };
 }
 
@@ -245,6 +286,7 @@ export async function startRunDurably(client, params) {
   const handle = await startWorkflowRun({
     workflowId: startPlan.workflowId,
     value: workflowInput.value,
+    scope: workflowInput.scope,
     sleepMs: params.sleepMs,
     useLlm: params.useLlm,
     bundlesRoot: params.bundlesRoot,

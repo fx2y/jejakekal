@@ -7,7 +7,16 @@ async function readMarkerJson(path, readTextFile) {
 }
 
 /**
- * @param {{ value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }} input
+ * @param {{
+ *   value: string,
+ *   sleepMs?: number,
+ *   bundlesRoot: string,
+ *   useLlm?: boolean,
+ *   pauseAfterS4Ms?: number,
+ *   ocrPolicy?: Record<string, unknown>,
+ *   scope?: {namespace?:string, acl?:Record<string, unknown>},
+ *   embeddingModel:string
+ * }} input
  * @param {{
  *   workflowId: string,
  *   readTextFile: (path: string, encoding: BufferEncoding) => Promise<string>,
@@ -19,7 +28,7 @@ async function readMarkerJson(path, readTextFile) {
  *   runS4NormalizeDocir: (input: {docId:string,version:number,rawSha:string,markerConfigSha:string,markerJson:Record<string, unknown>,marker:{version?:string,stdout_sha256?:string,stderr_sha256?:string},parseKeys:string[],parseShaByKey:Record<string,string>}) => Promise<any>,
  *   runS4xAfterNormalize?: (input: {workflowId:string,reserved:{raw_sha:string,doc_id:string,ver:number,marker_config_sha:string},marker:any,markerJson:Record<string, unknown>,normalized:any,ocrPolicy?:Record<string, unknown>}) => Promise<unknown>,
  *   runS4ToS5Pause: (pauseAfterS4Ms: number | undefined) => Promise<void>,
- *   runS5IndexFts: (input: {workflowId:string,docId:string,version:number,language?:string}) => Promise<any>,
+ *   runS5IndexFts: (input: {workflowId:string,docId:string,version:number,language?:string,scope?: {namespace?:string, acl?:Record<string, unknown>}, embeddingModel:string}) => Promise<any>,
  *   runS6EmitExecMemo: (input: {workflowId:string,docId:string,version:number,rawSha:string,markerConfigSha:string}) => Promise<any>,
  *   runS7ArtifactCount: (workflowId:string) => Promise<number>,
  *   runS8ArtifactPostcondition: (artifactCount:number) => void
@@ -81,7 +90,9 @@ export async function runDefaultTextLane(input, deps) {
   await deps.runS5IndexFts({
     workflowId: deps.workflowId,
     docId: reserved.doc_id,
-    version: reserved.ver
+    version: reserved.ver,
+    scope: input.scope,
+    embeddingModel: input.embeddingModel
   });
   const memo = await deps.runS6EmitExecMemo({
     workflowId: deps.workflowId,

@@ -25,6 +25,22 @@ function asRecord(value) {
 
 /**
  * @param {unknown} value
+ * @returns {unknown}
+ */
+function sortDeep(value) {
+  if (Array.isArray(value)) return value.map((entry) => sortDeep(entry));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const key of Object.keys(/** @type {Record<string, unknown>} */ (value)).sort((a, b) => a.localeCompare(b))) {
+      out[key] = sortDeep(/** @type {Record<string, unknown>} */ (value)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * @param {unknown} value
  * @returns {number[]|null}
  */
 function asNumberArray(value) {
@@ -40,6 +56,22 @@ function normalizeText(value) {
   const text = String(value ?? '').trim().toLowerCase();
   if (!text) return null;
   return text.replace(/\s+/g, ' ');
+}
+
+/**
+ * @param {unknown} value
+ */
+function normalizeNamespace(value) {
+  const namespace = String(value ?? '').trim();
+  return namespace || DEFAULT_NAMESPACE;
+}
+
+/**
+ * @param {unknown} value
+ */
+function normalizeScopeAcl(value) {
+  const acl = asRecord(value);
+  return acl ? /** @type {Record<string, unknown>} */ (sortDeep(acl)) : {};
 }
 
 /**
@@ -74,6 +106,9 @@ function compareTableCells(a, b) {
 function rowizeTableCells(data, fallbackText) {
   /** @type {Array<{row_idx:number,col_idx:number,key_norm:string|null,val_norm:string|null,val_num:number|null,unit:string|null,text:string|null}>} */
   const out = [];
+  const headers = Array.isArray(data.headers)
+    ? data.headers.map((header) => normalizeText(header))
+    : [];
   const rows = Array.isArray(data.rows) ? data.rows : null;
   if (rows && rows.length > 0) {
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx += 1) {
@@ -81,15 +116,16 @@ function rowizeTableCells(data, fallbackText) {
       if (Array.isArray(row)) {
         for (let colIdx = 0; colIdx < row.length; colIdx += 1) {
           const cell = row[colIdx];
+          const keyNorm = headers[colIdx] ?? null;
           const valNorm = normalizeText(cell);
           out.push({
             row_idx: rowIdx,
             col_idx: colIdx,
-            key_norm: null,
+            key_norm: keyNorm,
             val_norm: valNorm,
             val_num: parseNumeric(cell),
             unit: null,
-            text: valNorm
+            text: [keyNorm, valNorm].filter(Boolean).join(' ') || null
           });
         }
         continue;
@@ -181,12 +217,20 @@ function resolvePositiveInt(value, fallback, code) {
 
 /**
  * @param {import('pg').Client} client
- * @param {{docId:string, version:number, language?:string, pageNumbers?:number[]}} params
+ * @param {{
+ *   docId:string,
+ *   version:number,
+ *   language?:string,
+ *   pageNumbers?:number[],
+ *   scope?: {namespace?:string, acl?:Record<string, unknown>}
+ * }} params
  */
 async function syncRetrievalProjection(client, params) {
   const language = resolveFtsLanguage(params.language);
   const pages = canonicalPages(params.pageNumbers);
   const pageScoped = pages.length > 0;
+  const namespace = normalizeNamespace(params.scope?.namespace);
+  const acl = normalizeScopeAcl(params.scope?.acl);
 
   if (pageScoped) {
     await client.query(
@@ -226,7 +270,7 @@ async function syncRetrievalProjection(client, params) {
                 b.ver,
                 b.block_id,
                 $4::text,
-                '{}'::jsonb,
+                $5::jsonb,
                 b.type,
                 b.text,
                 b.data,
@@ -255,7 +299,9 @@ async function syncRetrievalProjection(client, params) {
            AND b.ver = $2
            AND b.page = ANY($3::int[])
          ON CONFLICT (doc_id, ver, block_id) DO UPDATE
-         SET type = EXCLUDED.type,
+         SET ns = EXCLUDED.ns,
+              acl = EXCLUDED.acl,
+              type = EXCLUDED.type,
               text = EXCLUDED.text,
               data = EXCLUDED.data,
               title_norm = EXCLUDED.title_norm,
@@ -270,7 +316,7 @@ async function syncRetrievalProjection(client, params) {
                 b.ver,
                 b.block_id,
                 $3::text,
-                '{}'::jsonb,
+                $4::jsonb,
                 b.type,
                 b.text,
                 b.data,
@@ -298,7 +344,9 @@ async function syncRetrievalProjection(client, params) {
          WHERE b.doc_id = $1
            AND b.ver = $2
          ON CONFLICT (doc_id, ver, block_id) DO UPDATE
-         SET type = EXCLUDED.type,
+         SET ns = EXCLUDED.ns,
+              acl = EXCLUDED.acl,
+              type = EXCLUDED.type,
               text = EXCLUDED.text,
               data = EXCLUDED.data,
               title_norm = EXCLUDED.title_norm,
@@ -308,7 +356,9 @@ async function syncRetrievalProjection(client, params) {
               bbox = EXCLUDED.bbox,
               block_sha = EXCLUDED.block_sha,
               updated_at = NOW()`,
-    pageScoped ? [params.docId, params.version, pages, DEFAULT_NAMESPACE] : [params.docId, params.version, DEFAULT_NAMESPACE]
+    pageScoped
+      ? [params.docId, params.version, pages, namespace, JSON.stringify(acl)]
+      : [params.docId, params.version, namespace, JSON.stringify(acl)]
   );
 
   await client.query(
@@ -411,38 +461,56 @@ async function syncRetrievalProjection(client, params) {
       block_hash: String(block.block_sha),
       block_id: String(block.block_id)
     };
-    for (const cell of cells) {
-      const result = await client.query(
-        `INSERT INTO table_cell (
-          doc_id, ver, table_id, page, row_idx, col_idx, key_norm, val_norm, val_num, unit, text, cite
+    if (cells.length < 1) continue;
+    const rowsPayload = cells.map((cell) => ({
+      doc_id: params.docId,
+      ver: params.version,
+      table_id: tableId,
+      page: Number(block.page),
+      row_idx: cell.row_idx,
+      col_idx: cell.col_idx,
+      key_norm: cell.key_norm,
+      val_norm: cell.val_norm,
+      val_num: cell.val_num,
+      unit: cell.unit,
+      text: cell.text,
+      cite
+    }));
+    const result = await client.query(
+      `WITH rows AS (
+         SELECT *
+         FROM jsonb_to_recordset($1::jsonb) AS x(
+           doc_id text,
+           ver int,
+           table_id text,
+           page int,
+           row_idx int,
+           col_idx int,
+           key_norm text,
+           val_norm text,
+           val_num double precision,
+           unit text,
+           text text,
+           cite jsonb
          )
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
-         ON CONFLICT (doc_id, ver, table_id, row_idx, col_idx) DO UPDATE
-         SET page = EXCLUDED.page,
-             key_norm = EXCLUDED.key_norm,
-             val_norm = EXCLUDED.val_norm,
-             val_num = EXCLUDED.val_num,
-             unit = EXCLUDED.unit,
-             text = EXCLUDED.text,
-             cite = EXCLUDED.cite,
-             updated_at = NOW()`,
-        [
-          params.docId,
-          params.version,
-          tableId,
-          Number(block.page),
-          cell.row_idx,
-          cell.col_idx,
-          cell.key_norm,
-          cell.val_norm,
-          cell.val_num,
-          cell.unit,
-          cell.text,
-          JSON.stringify(cite)
-        ]
-      );
-      insertedTableCells += result.rowCount ?? 0;
-    }
+       )
+       INSERT INTO table_cell (
+         doc_id, ver, table_id, page, row_idx, col_idx, key_norm, val_norm, val_num, unit, text, cite
+       )
+       SELECT doc_id, ver, table_id, page, row_idx, col_idx, key_norm, val_norm, val_num, unit, text, cite
+       FROM rows
+       ON CONFLICT (doc_id, ver, table_id, row_idx, col_idx) DO UPDATE
+       SET page = EXCLUDED.page,
+           key_norm = EXCLUDED.key_norm,
+           val_norm = EXCLUDED.val_norm,
+           val_num = EXCLUDED.val_num,
+           unit = EXCLUDED.unit,
+           text = EXCLUDED.text,
+           cite = EXCLUDED.cite,
+           updated_at = NOW()`,
+      [JSON.stringify(rowsPayload)]
+    );
+    insertedTableCells += result.rowCount ?? 0;
   }
 
   await client.query(
@@ -523,7 +591,7 @@ export async function upsertBlockLedger(client, params) {
 
 /**
  * @param {import('pg').Client} client
- * @param {{docId:string, version:number, language?:string}} params
+ * @param {{docId:string, version:number, language?:string, scope?: {namespace?:string, acl?:Record<string, unknown>}}} params
  */
 export async function populateBlockTsv(client, params) {
   const language = resolveFtsLanguage(params.language);
@@ -536,7 +604,8 @@ export async function populateBlockTsv(client, params) {
   const projection = await syncRetrievalProjection(client, {
     docId: params.docId,
     version: params.version,
-    language
+    language,
+    scope: params.scope
   });
   return { indexed: result.rowCount, projection };
 }
@@ -599,7 +668,7 @@ export async function buildLexicalHeadline(client, params) {
 /**
  * @param {import('pg').Client} client
  * SQL adapter only: lexical lane candidate query against the legacy block ledger.
- * @param {{query:string, language:string, limit:number, scope:{namespaces:string[]}}} params
+ * @param {{query:string, language:string, limit:number, scope:{namespaces:string[], acl?:Record<string, unknown>}}} params
  */
 export async function queryLexicalLaneRows(client, params) {
   const query = String(params.query ?? '').trim();
@@ -615,6 +684,8 @@ export async function queryLexicalLaneRows(client, params) {
   if (namespaces.length < 1) {
     return [];
   }
+  const acl =
+    params.scope?.acl && typeof params.scope.acl === 'object' && !Array.isArray(params.scope.acl) ? params.scope.acl : {};
   const diagnostics = await inspectLexicalQuery(client, { query, language });
   if (!diagnostics.indexable) {
     return [];
@@ -622,7 +693,7 @@ export async function queryLexicalLaneRows(client, params) {
   const limit = Math.max(1, Math.min(200, Math.trunc(Number(params.limit ?? 50))));
   const result = await client.query(
     `WITH q AS (
-       SELECT websearch_to_tsquery($1::regconfig, $2) AS tsq
+       SELECT websearch_to_tsquery($1::regconfig, $2) AS tsq, $3::jsonb AS acl
      )
      SELECT b.doc_id,
             b.ver,
@@ -634,12 +705,13 @@ export async function queryLexicalLaneRows(client, params) {
             b.block_sha,
             b.text
      FROM q
-     JOIN doc_block b ON b.ns = ANY($3::text[])
+     JOIN doc_block b ON b.ns = ANY($4::text[])
      JOIN doc_block_fts f ON f.block_pk = b.id
-     WHERE f.vec @@ q.tsq
+     WHERE b.acl @> q.acl
+       AND f.vec @@ q.tsq
      ORDER BY rank DESC, b.id ASC
-     LIMIT $4`,
-    [language, query, namespaces, limit]
+     LIMIT $5`,
+    [language, query, JSON.stringify(acl), namespaces, limit]
   );
   return result.rows.map((row) => ({
     doc_id: String(row.doc_id),
@@ -1100,7 +1172,7 @@ export async function deleteTextTableBlocksByPages(client, params) {
 
 /**
  * @param {import('pg').Client} client
- * @param {{docId:string, version:number, pageNumbers:number[], language?:string}} params
+ * @param {{docId:string, version:number, pageNumbers:number[], language?:string, scope?: {namespace?:string, acl?:Record<string, unknown>}}} params
  */
 export async function populateBlockTsvForPages(client, params) {
   const pages = canonicalPages(params.pageNumbers);
@@ -1116,7 +1188,8 @@ export async function populateBlockTsvForPages(client, params) {
     docId: params.docId,
     version: params.version,
     language,
-    pageNumbers: pages
+    pageNumbers: pages,
+    scope: params.scope
   });
   return { indexed: result.rowCount, projection };
 }

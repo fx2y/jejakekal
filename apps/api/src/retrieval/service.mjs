@@ -6,7 +6,7 @@ import { buildLexicalLanePlan } from './lanes/lexical.mjs';
 import { buildTableLanePlan } from './lanes/table.mjs';
 import { buildTrgmLanePlan } from './lanes/trgm.mjs';
 import { buildVectorLanePlan } from './lanes/vector.mjs';
-import { assertLegacyScopeCompatible, normalizeRetrievalScope } from './scope.mjs';
+import { assertRetrievalScopePolicy, normalizeRetrievalScope } from './scope.mjs';
 
 /**
  * @param {{doc_id:string, ver:number, block_id:string, rank:number}} a
@@ -41,7 +41,7 @@ export function createRetrievalService(deps) {
    */
   async function queryRankedBlocksByTsQuery(client, params) {
     const scope = normalizeRetrievalScope(params.scope);
-    assertLegacyScopeCompatible(scope);
+    assertRetrievalScopePolicy(scope);
     const lexicalPlan = buildLexicalLanePlan({
       query: params.query,
       language: params.language,

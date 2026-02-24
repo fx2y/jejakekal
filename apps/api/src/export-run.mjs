@@ -1,8 +1,6 @@
-import { ingestDocument } from '../../../packages/pipeline/src/ingest.mjs';
 import { makeManifest, writeRunBundle } from '../../../packages/core/src/run-bundle.mjs';
 import { readRun } from './runs-service.mjs';
 import { toBundleTimeline } from './runs-projections.mjs';
-import { unprocessable } from './request-errors.mjs';
 import { parsePersistedArtifactUri, resolveWithinRoot } from './artifact-uri.mjs';
 import { assertArtifactBlobsReadable } from './artifact-blobs.mjs';
 import { listArtifactsByRunId } from './artifacts/repository.mjs';
@@ -10,10 +8,6 @@ import { assertFrozenArtifactType } from './contracts.mjs';
 import { buildIngestManifestSummary } from './export/ingest-summary.mjs';
 import { buildOcrBundleSidecars } from './export/ocr-sidecars.mjs';
 import { buildRetrievalBundleSidecars } from './export/retrieval-sidecars.mjs';
-
-function trimPreview(source) {
-  return source.replace(/\s+/g, ' ').trim().slice(0, 24);
-}
 
 /**
  * @typedef {{
@@ -25,19 +19,6 @@ function trimPreview(source) {
  *   prov?: Record<string, unknown>
  * }} ExportArtifactRef
  */
-
-/**
- * @param {{ paths: { raw: string, docir: string, chunkIndex: string, memo: string } }} ingest
- * @returns {ExportArtifactRef[]}
- */
-export function buildIngestArtifacts(ingest) {
-  return [
-    { id: 'raw', path: ingest.paths.raw },
-    { id: 'docir', path: ingest.paths.docir },
-    { id: 'chunk-index', path: ingest.paths.chunkIndex },
-    { id: 'memo', path: ingest.paths.memo }
-  ];
-}
 
 /**
  * @param {Array<{id:string,type:string,uri:string,sha256:string,prov:Record<string, unknown>}>} rows
@@ -71,25 +52,6 @@ function mapPersistedArtifactsForExport(rows, bundlesRoot) {
 }
 
 /**
- * Recover original source from DBOS step outputs.
- * Legacy-only fallback: modern runs intentionally avoid source text in timeline outputs.
- * @param {Array<{function_name?: string, output?: any}>} timeline
- */
-export function sourceFromRunTimeline(timeline) {
-  for (const row of timeline) {
-    if (
-      (row.function_name === 'prepare' || row.function_name === 'reserve-doc') &&
-      row.output &&
-      typeof row.output === 'object' &&
-      typeof row.output.source === 'string'
-    ) {
-      return row.output.source;
-    }
-  }
-  return null;
-}
-
-/**
  * @param {{
  *  client: import('pg').Client,
  *  bundlesRoot: string,
@@ -103,27 +65,13 @@ export async function exportRunBundle(params) {
 
   const bundleDir = resolveWithinRoot(params.bundlesRoot, params.runId, 'bundle');
   const persistedArtifacts = await listArtifactsByRunId(params.client, params.runId);
-  let artifacts = mapPersistedArtifactsForExport(persistedArtifacts, params.bundlesRoot);
-  let source = sourceFromRunTimeline(run.timeline);
-  if (artifacts.length === 0) {
-    if (!source) {
-      throw unprocessable('source_unrecoverable', { run_id: params.runId });
-    }
-    const ingestDir = resolveWithinRoot(params.bundlesRoot, params.runId, 'ingest');
-    const ingest = await ingestDocument({
-      docId: params.runId,
-      source,
-      outDir: ingestDir
-    });
-    artifacts = buildIngestArtifacts(ingest);
-  } else {
-    await assertArtifactBlobsReadable(artifacts, params.bundlesRoot, {
-      s3Store: params.s3Store
-    });
+  const artifacts = mapPersistedArtifactsForExport(persistedArtifacts, params.bundlesRoot);
+  if (artifacts.length < 1) {
+    throw new Error('missing_persisted_artifacts');
   }
-  if (artifacts.length > 0 && !source) {
-    source = '';
-  }
+  await assertArtifactBlobsReadable(artifacts, params.bundlesRoot, {
+    s3Store: params.s3Store
+  });
   const bundleTimeline = toBundleTimeline(run.timeline);
   const stepSummaries = run.timeline.map((row) => ({
     function_id: row.function_id,
@@ -160,7 +108,7 @@ export async function exportRunBundle(params) {
     timeline: bundleTimeline,
     toolIO: [{ tool: 'pipeline.ingest', workflowId: params.runId }],
     artifacts,
-    citations: source ? [{ source: 'local', confidence: 1, text: trimPreview(source) }] : [],
+    citations: [],
     extraJsonFiles: {
       'workflow_status.json': run.header,
       'operation_outputs.json': run.timeline,

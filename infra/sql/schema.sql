@@ -168,6 +168,9 @@ CREATE TABLE IF NOT EXISTS table_cell (
 );
 
 CREATE INDEX IF NOT EXISTS table_cell_doc_ver_idx ON table_cell (doc_id, ver, page, table_id, row_idx, col_idx);
+CREATE INDEX IF NOT EXISTS table_cell_key_exact_idx
+  ON table_cell (key_norm, doc_id, ver, page, table_id, row_idx, col_idx)
+  WHERE key_norm IS NOT NULL;
 CREATE INDEX IF NOT EXISTS table_cell_vec_gin ON table_cell USING GIN (vec);
 CREATE INDEX IF NOT EXISTS table_cell_key_trgm_gin ON table_cell USING GIN (key_norm gin_trgm_ops);
 

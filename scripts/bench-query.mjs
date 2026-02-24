@@ -276,7 +276,7 @@ async function captureExplainArtifacts(client) {
             ORDER BY t.doc_id ASC, t.ver ASC, t.page ASC, t.table_id ASC, t.row_idx ASC, t.col_idx ASC
             LIMIT $4`,
       params: [TABLE_EXACT_QUERY, '{}', ['default'], 25],
-      expectedIndexes: []
+      expectedIndexes: ['table_cell_key_exact_idx']
     },
     {
       class: 'retrieval.table.fts',

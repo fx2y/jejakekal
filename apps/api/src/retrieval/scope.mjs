@@ -1,5 +1,9 @@
 import { RETRIEVAL_DEFAULT_NAMESPACE } from './contracts.mjs';
 
+const RETRIEVAL_SCOPE_MODE = String(process.env.RETRIEVAL_SCOPE_MODE ?? 'full')
+  .trim()
+  .toLowerCase();
+
 /**
  * @param {unknown} value
  */
@@ -42,17 +46,17 @@ export function normalizeRetrievalScope(value) {
 }
 
 /**
- * C0 guardrail: schema/query adapters are single-tenant until `doc_block`+`acl` land.
+ * Optional rollout guard: set `RETRIEVAL_SCOPE_MODE=default-only` to enforce legacy single-tenant scope.
  * @param {{namespaces:string[], acl?:Record<string, unknown>}} scope
  */
-export function assertLegacyScopeCompatible(scope) {
+export function assertRetrievalScopePolicy(scope) {
+  if (RETRIEVAL_SCOPE_MODE !== 'default-only') {
+    return;
+  }
   const isDefaultOnly =
     Array.isArray(scope.namespaces) &&
     scope.namespaces.length === 1 &&
     scope.namespaces[0] === RETRIEVAL_DEFAULT_NAMESPACE;
   const acl = scope.acl ?? {};
-  const aclEntries = Object.keys(acl);
-  if (!isDefaultOnly || aclEntries.length > 0) {
-    throw new Error('retrieval_scope_unsupported');
-  }
+  if (!isDefaultOnly || Object.keys(acl).length > 0) throw new Error('retrieval_scope_unsupported');
 }

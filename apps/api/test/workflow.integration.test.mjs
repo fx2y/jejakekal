@@ -898,6 +898,7 @@ test('C3 export endpoint writes additive DBOS snapshot bundle for offline recons
   const bundle = await readBundle(exported.run_bundle_path);
   assert.ok(bundle['workflow_status.json']);
   assert.ok(bundle['operation_outputs.json']);
+  assert.deepEqual(bundle['citations.json'], []);
   assert.equal(bundle['manifest.json'].root, '<run-bundle-root>');
 
   assert.equal(bundle['workflow_status.json'].workflow_uuid, started.run_id);
@@ -1122,6 +1123,7 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
        to_regclass('public.doc_block_title_trgm_gin') AS doc_block_title_trgm_idx,
        to_regclass('public.doc_block_entity_trgm_gin') AS doc_block_entity_trgm_idx,
        to_regclass('public.doc_block_key_trgm_gin') AS doc_block_key_trgm_idx,
+       to_regclass('public.table_cell_key_exact_idx') AS table_cell_key_exact_idx,
        to_regclass('public.table_cell_key_trgm_gin') AS table_cell_key_trgm_idx,
        to_regclass('public.doc_block_vec_hnsw') AS doc_block_vec_hnsw_idx`
   );
@@ -1131,6 +1133,7 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
   assert.equal(indexRes.rows[0].doc_block_title_trgm_idx, 'doc_block_title_trgm_gin');
   assert.equal(indexRes.rows[0].doc_block_entity_trgm_idx, 'doc_block_entity_trgm_gin');
   assert.equal(indexRes.rows[0].doc_block_key_trgm_idx, 'doc_block_key_trgm_gin');
+  assert.equal(indexRes.rows[0].table_cell_key_exact_idx, 'table_cell_key_exact_idx');
   assert.equal(indexRes.rows[0].table_cell_key_trgm_idx, 'table_cell_key_trgm_gin');
   assert.equal(indexRes.rows[0].doc_block_vec_hnsw_idx, 'doc_block_vec_hnsw');
 
@@ -1411,6 +1414,101 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
   assert.equal(hasVecIndexScan, true);
 });
 
+test('P0 scope propagation: start ns/acl persists to doc_block and lexical retrieval gates by acl', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const nonce = `${process.pid}-${Date.now()}`;
+  const sharedToken = `tenant-acl-token-${nonce}`;
+  const bodyA = {
+    intent: 'doc',
+    args: {
+      source: `${sharedToken}\ninvoice acl blue`,
+      ns: ['tenant-a'],
+      acl: { team: 'blue', user: 'u-1' }
+    },
+    sleepMs: 10
+  };
+  const bodyB = {
+    intent: 'doc',
+    args: {
+      source: `${sharedToken}\ninvoice acl green`,
+      ns: ['tenant-a'],
+      acl: { user: 'u-2', team: 'green' }
+    },
+    sleepMs: 10
+  };
+  const startA = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(bodyA)
+  });
+  const startB = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(bodyB)
+  });
+  assert.equal(startA.status, 202);
+  assert.equal(startB.status, 202);
+  const runA = await startA.json();
+  const runB = await startB.json();
+  const doneA = await waitForRunTerminal(baseUrl, runA.run_id);
+  const doneB = await waitForRunTerminal(baseUrl, runB.run_id);
+  assert.equal(doneA?.status, 'done');
+  assert.equal(doneB?.status, 'done');
+
+  const reserveA = doneA.timeline.find((row) => row.function_name === 'reserve-doc')?.output;
+  const reserveB = doneB.timeline.find((row) => row.function_name === 'reserve-doc')?.output;
+  assert.equal(typeof reserveA?.doc_id, 'string');
+  assert.equal(typeof reserveB?.doc_id, 'string');
+
+  const persistedA = await client.query(
+    `SELECT DISTINCT ns, acl
+     FROM doc_block
+     WHERE doc_id = $1 AND ver = $2`,
+    [reserveA.doc_id, reserveA.ver]
+  );
+  const persistedB = await client.query(
+    `SELECT DISTINCT ns, acl
+     FROM doc_block
+     WHERE doc_id = $1 AND ver = $2`,
+    [reserveB.doc_id, reserveB.ver]
+  );
+  assert.equal(persistedA.rows.length, 1);
+  assert.equal(persistedB.rows.length, 1);
+  assert.equal(persistedA.rows[0].ns, 'tenant-a');
+  assert.equal(persistedB.rows[0].ns, 'tenant-a');
+  assert.deepEqual(persistedA.rows[0].acl, { team: 'blue', user: 'u-1' });
+  assert.deepEqual(persistedB.rows[0].acl, { team: 'green', user: 'u-2' });
+
+  const hitsBlue = await queryRankedBlocksByTsQuery(client, {
+    query: sharedToken,
+    limit: 20,
+    scope: { namespaces: ['tenant-a'], acl: { user: 'u-1', team: 'blue' } }
+  });
+  const hitsGreen = await queryRankedBlocksByTsQuery(client, {
+    query: sharedToken,
+    limit: 20,
+    scope: { namespaces: ['tenant-a'], acl: { team: 'green', user: 'u-2' } }
+  });
+  const hitsDefault = await queryRankedBlocksByTsQuery(client, {
+    query: sharedToken,
+    limit: 20,
+    scope: { namespaces: ['default'], acl: {} }
+  });
+
+  assert.equal(hitsBlue.some((row) => row.doc_id === reserveA.doc_id), true);
+  assert.equal(hitsBlue.some((row) => row.doc_id === reserveB.doc_id), false);
+  assert.equal(hitsGreen.some((row) => row.doc_id === reserveB.doc_id), true);
+  assert.equal(hitsGreen.some((row) => row.doc_id === reserveA.doc_id), false);
+  assert.equal(hitsDefault.some((row) => row.doc_id === reserveA.doc_id || row.doc_id === reserveB.doc_id), false);
+});
+
 test('C5 table lane: deterministic table_cell addresses + exact-key fast path + fts fallback survive reingest', async (t) => {
   const client = await setupDbOrSkip(t);
   if (!client) return;
@@ -1437,8 +1535,8 @@ test('C5 table lane: deterministic table_cell addresses + exact-key fast path + 
     data: {
       headers: ['item', 'qty', 'amount'],
       rows: [
-        { qty: '2', amount: '$10.50', item: 'Widget Alpha' },
-        { item: 'Widget Beta', amount: '$20.00', qty: '4' }
+        ['Widget Alpha', '2', '$10.50'],
+        ['Widget Beta', '4', '$20.00']
       ]
     },
     block_sha: 'ab'.repeat(32)
@@ -1476,6 +1574,37 @@ test('C5 table lane: deterministic table_cell addresses + exact-key fast path + 
   assert.equal(typeof exactA[0].cite.block_hash, 'string');
   assert.equal(typeof exactA[0].cite.block_id, 'string');
   assert.notEqual(exactA[0].table_id, tableBlock.block_id);
+
+  await client.query('SET enable_seqscan = off');
+  const tableExactExplain = await client.query(
+    `EXPLAIN (FORMAT JSON)
+     WITH q AS (
+       SELECT $1::text AS key_q, $2::jsonb AS acl
+     )
+     SELECT t.doc_id, t.ver, (t.cite->>'block_id') AS block_id
+     FROM q
+     JOIN table_cell t ON t.key_norm = q.key_q
+     JOIN doc_block b
+       ON b.doc_id = t.doc_id
+      AND b.ver = t.ver
+      AND b.block_id = (t.cite->>'block_id')
+      AND b.type = 'table'
+     WHERE b.ns = ANY($3::text[])
+       AND b.acl @> q.acl
+     ORDER BY t.doc_id ASC, t.ver ASC, t.page ASC, t.table_id ASC, t.row_idx ASC, t.col_idx ASC
+     LIMIT $4`,
+    ['amount', '{}', ['default'], 25]
+  );
+  await client.query('RESET enable_seqscan');
+  const tableExactExplainText = JSON.stringify(tableExactExplain.rows[0]?.['QUERY PLAN']?.[0]);
+  const hasTableExactIndexNode =
+    tableExactExplainText.includes('"Node Type":"Bitmap Index Scan"') ||
+    tableExactExplainText.includes('"Node Type":"Index Scan"') ||
+    tableExactExplainText.includes('"Node Type":"Index Only Scan"');
+  assert.equal(
+    tableExactExplainText.includes('table_cell_key_exact_idx') || hasTableExactIndexNode,
+    true
+  );
 
   const ftsA = await queryTableCellLaneRows(client, {
     query: 'widget beta',
@@ -1607,6 +1736,44 @@ test('P2 workflowId claim hash scope is canonical intent+args (execution control
   const workflowId = `wf-hash-scope-${process.pid}-${Date.now()}`;
   const payloadA = { intent: 'doc', args: { source: 'same-hash' }, workflowId, sleepMs: 5, useLlm: false };
   const payloadB = { intent: 'doc', args: { source: 'same-hash' }, workflowId, sleepMs: 50, useLlm: true };
+
+  const first = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payloadA)
+  });
+  assert.equal(first.status, 202);
+  const firstBody = await first.json();
+  const second = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payloadB)
+  });
+  assert.equal(second.status, 202);
+  const secondBody = await second.json();
+  assert.equal(secondBody.run_id, firstBody.run_id);
+});
+
+test('P1 workflowId claim hash canonicalizes nested acl key order', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const workflowId = `wf-hash-acl-order-${process.pid}-${Date.now()}`;
+  const payloadA = {
+    intent: 'doc',
+    args: { source: 'same-hash-acl', ns: ['tenant-a'], acl: { user: 'u-1', team: 'blue' } },
+    workflowId
+  };
+  const payloadB = {
+    intent: 'doc',
+    args: { source: 'same-hash-acl', ns: ['tenant-a'], acl: { team: 'blue', user: 'u-1' } },
+    workflowId
+  };
 
   const first = await fetch(`${baseUrl}/runs`, {
     method: 'POST',

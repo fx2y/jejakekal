@@ -16,19 +16,30 @@ function parseDbosCell(value) {
 }
 
 /**
+ * @param {unknown} value
+ */
+function stripSourceFields(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripSourceFields(entry));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const out = {};
+  for (const key of Object.keys(/** @type {Record<string, unknown>} */ (value)).sort((a, b) => a.localeCompare(b))) {
+    if (key === 'source') continue;
+    out[key] = stripSourceFields(/** @type {Record<string, unknown>} */ (value)[key]);
+  }
+  return out;
+}
+
+/**
  * Strip control-plane payload leaks from timeline outputs.
- * @param {string} functionName
+ * @param {string} _functionName
  * @param {unknown} output
  */
-function sanitizeOutput(functionName, output) {
-  if (!output || typeof output !== 'object' || Array.isArray(output)) return output;
-  if (functionName !== 'reserve-doc') return output;
-  const row = /** @type {Record<string, unknown>} */ (output);
-  if (!Object.prototype.hasOwnProperty.call(row, 'source')) {
-    return output;
-  }
-  const { source: _discarded, ...rest } = row;
-  return rest;
+function sanitizeOutput(_functionName, output) {
+  return stripSourceFields(output);
 }
 
 /**

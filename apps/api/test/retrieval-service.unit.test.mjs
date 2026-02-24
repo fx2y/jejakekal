@@ -40,21 +40,25 @@ test('retrieval scope: namespaces are mandatory and canonicalized', () => {
   });
 });
 
-test('retrieval service: rejects unsupported multi-tenant scope until schema lane lands', async () => {
-  const service = makeService();
-  await assert.rejects(
-    () =>
-      service.queryRankedBlocksByTsQuery(
-        /** @type {import('pg').Client} */ ({}),
-        {
-          query: 'invoice',
-          scope: { namespaces: ['tenant-a'] }
-        }
-      ),
+test('retrieval service: accepts non-default scope and forwards acl to lane adapters', async () => {
+  /** @type {Array<any>} */
+  const calls = [];
+  const service = makeService({
+    queryLexicalLaneRows: async (_client, plan) => {
+      calls.push(plan);
+      return [];
+    }
+  });
+  const rows = await service.queryRankedBlocksByTsQuery(
+    /** @type {import('pg').Client} */ ({}),
     {
-      message: 'retrieval_scope_unsupported'
+      query: 'invoice',
+      scope: { namespaces: ['tenant-a'], acl: { user: 'u-1' } }
     }
   );
+  assert.deepEqual(rows, []);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].scope, { namespaces: ['tenant-a'], acl: { user: 'u-1' } });
 });
 
 test('retrieval service: lexical lane output is deterministic by rank then id', async () => {
