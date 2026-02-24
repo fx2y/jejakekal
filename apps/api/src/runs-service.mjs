@@ -15,7 +15,7 @@ import {
   resolveCompatToday,
   resolveSourceCompatUntil
 } from './source-compat.mjs';
-import { resolveOcrPolicy } from './ocr/config.mjs';
+import { normalizeOcrPolicyInput, resolveOcrPolicy } from './ocr/config.mjs';
 
 const SOURCE_INTENT_SET = new Set(SOURCE_INTENTS);
 
@@ -128,12 +128,33 @@ function toWorkflowInput(command) {
 }
 
 /**
+ * @param {{ocrPolicy?: Record<string, unknown>}} params
+ */
+function resolveRunOcrPolicy(params) {
+  try {
+    const policy = params.ocrPolicy ? normalizeOcrPolicyInput(params.ocrPolicy) : resolveOcrPolicy(process.env);
+    if (policy.engine !== 'vllm') {
+      throw badRequest('invalid_run_payload', { field: 'ocrPolicy.engine' });
+    }
+    return policy;
+  } catch (error) {
+    if (error?.name === 'RequestError') {
+      throw error;
+    }
+    if (error instanceof Error && error.message.startsWith('invalid_ocr_policy_')) {
+      throw badRequest('invalid_run_payload', { field: 'ocrPolicy' });
+    }
+    throw error;
+  }
+}
+
+/**
  * @param {import('pg').Client} client
  * @param {{intent:string, args:Record<string, unknown>, workflowId?: string, sleepMs?: number, useLlm?: boolean, bundlesRoot?: string, ocrPolicy?: Record<string, unknown>}} params
  */
 export async function startRunDurably(client, params) {
   const workflowInput = toWorkflowInput(params);
-  const ocrPolicy = params.ocrPolicy ?? resolveOcrPolicy(process.env);
+  const ocrPolicy = resolveRunOcrPolicy(params);
   if (params.workflowId) {
     assertValidRunId(params.workflowId, 'workflowId');
     await ensureWorkflowIdPayloadMatch(client, params.workflowId, makeInputHash(params));

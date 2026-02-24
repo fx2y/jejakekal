@@ -32,7 +32,7 @@ export async function defaultWorkflow(params) {
 }
 
 /**
- * @param {{client: import('pg').Client, workflowId:string, value:string, sleepMs?: number, bundlesRoot?: string}} params
+ * @param {{client: import('pg').Client, workflowId:string, value:string, sleepMs?: number, bundlesRoot?: string, ocrPolicy?: Record<string, unknown>}} params
  */
 export async function hardDocWorkflow(params) {
   await ensureDbosRuntime();
@@ -40,7 +40,8 @@ export async function hardDocWorkflow(params) {
     workflowId: params.workflowId,
     value: params.value,
     sleepMs: params.sleepMs,
-    bundlesRoot: params.bundlesRoot
+    bundlesRoot: params.bundlesRoot,
+    ocrPolicy: params.ocrPolicy
   });
   await handle.getResult();
   return readTimeline(params.client, handle.workflowID);

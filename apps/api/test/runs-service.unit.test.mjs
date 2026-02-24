@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeRunStartPayload } from '../src/runs-service.mjs';
+import { normalizeRunStartPayload, startRunDurably } from '../src/runs-service.mjs';
 import {
   ALLOW_SOURCE_COMPAT_UNTIL,
   JEJAKEKAL_COMPAT_TODAY,
@@ -58,4 +58,29 @@ test('runs-service: source compat path hard-fails after sunset', (t) => {
   });
   const telemetry = getSourceCompatTelemetry();
   assert.equal(telemetry.count, 0);
+});
+
+test('runs-service: invalid OCR policy from client input fails typed 400', async () => {
+  await assert.rejects(
+    () =>
+      startRunDurably(
+        /** @type {import('pg').Client} */ ({}),
+        {
+          intent: 'doc',
+          args: { source: 'abc' },
+          ocrPolicy: {
+            enabled: true,
+            engine: 'vllm',
+            model: '',
+            baseUrl: 'http://127.0.0.1:8000',
+            timeoutMs: 1000,
+            maxPages: 1
+          }
+        }
+      ),
+    {
+      name: 'RequestError',
+      payload: { error: 'invalid_run_payload', field: 'ocrPolicy' }
+    }
+  );
 });

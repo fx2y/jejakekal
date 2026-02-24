@@ -70,3 +70,19 @@ export function resolveOcrPolicy(env = process.env) {
     maxPages: parsePositiveInt(env.OCR_MAX_PAGES ?? 10, 'max_pages')
   });
 }
+
+/**
+ * @param {unknown} input
+ * @returns {OcrPolicy}
+ */
+export function normalizeOcrPolicyInput(input) {
+  const row = input && typeof input === 'object' ? /** @type {Record<string, unknown>} */ (input) : {};
+  return Object.freeze({
+    enabled: parseEnabled(row.enabled),
+    engine: parseEngine(row.engine),
+    model: parseNonEmptyString(row.model, 'model'),
+    baseUrl: parseNonEmptyString(row.baseUrl, 'base_url'),
+    timeoutMs: parsePositiveInt(row.timeoutMs, 'timeout_ms'),
+    maxPages: parsePositiveInt(row.maxPages, 'max_pages')
+  });
+}

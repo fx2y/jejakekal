@@ -19,13 +19,14 @@ import { MARKER_CONFIG_PLACEHOLDER_SHA, reserveDocVersion } from './ingest/doc-r
 import { buildExecMemoMarkdown } from './ingest/exec-memo.mjs';
 import { listBlocksByDocVersion, populateBlockTsv, upsertBlockLedger } from './search/block-repository.mjs';
 import { callIdempotentEffect } from './effects.mjs';
-import { buildIngestEffectKey, buildOcrPageRenderEffectKey } from './ingest/effect-key.mjs';
+import { buildIngestEffectKey, buildOcrPageEffectKey, buildOcrPageRenderEffectKey } from './ingest/effect-key.mjs';
 import { defaultBundlesRootPath } from './bundles-root.mjs';
 import { resolveOcrPolicy } from './ocr/config.mjs';
 import { runDefaultTextLane } from './workflows/default-text-lane.mjs';
 import { runOcrGateSeam } from './ocr/gate-seam.mjs';
-import { insertOcrJob, updateOcrPageRender, upsertOcrPage } from './ocr/repository.mjs';
+import { insertOcrJob, insertOcrPatch, updateOcrPageRender, updateOcrPageResult, upsertOcrPage } from './ocr/repository.mjs';
 import { runOcrRenderSeam } from './ocr/render-seam.mjs';
+import { runOcrEngineSeam } from './ocr/engine-seam.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>) | undefined} */
@@ -37,6 +38,8 @@ let flakyRetryWorkflowFn;
 const flakyAttemptByWorkflow = new Map();
 let s3BlobStore;
 const storeRawFailpointByWorkflow = new Set();
+const ocrEffectFailpointByPage = new Set();
+const OCR_PROMPT = 'Text Recognition:';
 
 function getS3BlobStore() {
   if (!s3BlobStore) {
@@ -77,6 +80,22 @@ function shouldFailAfterStoreRawEffectOnce(workflowId) {
     return false;
   }
   storeRawFailpointByWorkflow.add(workflowId);
+  return true;
+}
+
+/**
+ * @param {string} workflowId
+ * @param {number} pageIdx
+ */
+function shouldFailAfterOcrEffectOnce(workflowId, pageIdx) {
+  if (process.env.JEJAKEKAL_FAIL_AFTER_OCR_EFFECT_ONCE !== '1') {
+    return false;
+  }
+  const key = `${workflowId}|p${pageIdx}`;
+  if (ocrEffectFailpointByPage.has(key)) {
+    return false;
+  }
+  ocrEffectFailpointByPage.add(key);
   return true;
 }
 
@@ -793,6 +812,169 @@ async function runS6RenderStoreOcrPages(input) {
   });
 }
 
+/**
+ * @param {{
+ *   workflowId:string,
+ *   docId:string,
+ *   version:number,
+ *   gateRev:string,
+ *   renderedPages:Array<{page_idx:number,png_uri:string|null,png_sha:string|null}>,
+ *   ocrPolicy?: Record<string, unknown>
+ * }} input
+ */
+async function persistOcrPagesStep(input) {
+  const ocrEnabled = input.ocrPolicy?.enabled !== false;
+  if (!ocrEnabled) {
+    return { ocr_pages: [], skipped: 'ocr_disabled' };
+  }
+  const store = getS3BlobStore();
+  /** @type {Array<{page_idx:number,raw_uri:string,raw_sha:string,patch_sha:string,patch:Record<string, unknown>,effect_replayed:boolean}>} */
+  const persisted = [];
+
+  for (const page of input.renderedPages ?? []) {
+    if (typeof page.png_uri !== 'string' || typeof page.png_sha !== 'string') {
+      continue;
+    }
+    const effectKey = buildOcrPageEffectKey({
+      workflowId: input.workflowId,
+      docId: input.docId,
+      version: input.version,
+      pageIdx: page.page_idx,
+      model: String(input.ocrPolicy?.model ?? ''),
+      gateRev: input.gateRev,
+      pngSha256: page.png_sha
+    });
+    const effect = await runIdempotentExternalEffect(effectKey, async () => {
+      const out = await runOcrEngineSeam({
+        pages: [
+          {
+            doc_id: input.docId,
+            ver: input.version,
+            page_idx: page.page_idx,
+            png_uri: page.png_uri,
+            prompt: OCR_PROMPT
+          }
+        ],
+        ocrPolicy: input.ocrPolicy
+      });
+      const first = out.patches[0];
+      if (!first) {
+        throw new Error('ocr_patch_missing');
+      }
+      const rawPayload = Buffer.from(JSON.stringify(first.raw), 'utf8');
+      const rawSha = sha256(rawPayload);
+      const rawKey = buildRunObjectKey({
+        runId: input.workflowId,
+        relativePath: `ocr/raw/p${page.page_idx}/${rawSha}.json`
+      });
+      const blob = await store.putObjectChecked({
+        key: rawKey,
+        payload: rawPayload,
+        contentType: 'application/json'
+      });
+      const rawVerify = await store.getObjectBytes({ key: rawKey });
+      if (sha256(rawVerify) !== rawSha) {
+        throw new Error('ocr_raw_blob_checksum_mismatch');
+      }
+      const patch = {
+        text_md: String(first.text_md ?? ''),
+        tables: Array.isArray(first.tables) ? first.tables : [],
+        confidence: first.confidence == null ? null : Number(first.confidence),
+        engine_meta:
+          first.engine_meta && typeof first.engine_meta === 'object' && !Array.isArray(first.engine_meta)
+            ? first.engine_meta
+            : {}
+      };
+      const patchSha = sha256(
+        JSON.stringify({
+          page_idx: page.page_idx,
+          patch,
+          raw_sha: rawSha
+        })
+      );
+      return {
+        page_idx: page.page_idx,
+        raw_uri: blob.uri,
+        raw_sha: rawSha,
+        patch_sha: patchSha,
+        patch
+      };
+    });
+    if (shouldFailAfterOcrEffectOnce(input.workflowId, page.page_idx)) {
+      throw new Error('failpoint_after_ocr_effect');
+    }
+    persisted.push({
+      page_idx: Number(effect.response.page_idx),
+      raw_uri: String(effect.response.raw_uri),
+      raw_sha: String(effect.response.raw_sha),
+      patch_sha: String(effect.response.patch_sha),
+      patch:
+        effect.response.patch &&
+        typeof effect.response.patch === 'object' &&
+        !Array.isArray(effect.response.patch)
+          ? /** @type {Record<string, unknown>} */ (effect.response.patch)
+          : {},
+      effect_replayed: effect.replayed
+    });
+  }
+
+  return withAppClient(async (client) => {
+    await client.query('BEGIN');
+    try {
+      const pages = [];
+      for (const row of persisted) {
+        const pageRow = await updateOcrPageResult(client, {
+          job_id: input.workflowId,
+          page_idx: row.page_idx,
+          status: 'ocr_ready',
+          raw_uri: row.raw_uri,
+          raw_sha: row.raw_sha
+        });
+        await insertOcrPatch(client, {
+          doc_id: input.docId,
+          ver: input.version,
+          page_idx: row.page_idx,
+          patch_sha: row.patch_sha,
+          patch: row.patch,
+          source_job_id: input.workflowId
+        });
+        pages.push({
+          page_idx: pageRow.page_idx,
+          raw_uri: pageRow.raw_uri,
+          raw_sha: pageRow.raw_sha,
+          patch_sha: row.patch_sha,
+          effect_replayed: row.effect_replayed
+        });
+      }
+      await client.query('COMMIT');
+      return { ocr_pages: pages };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  });
+}
+
+/**
+ * @param {{
+ *   workflowId:string,
+ *   docId:string,
+ *   version:number,
+ *   gateRev:string,
+ *   renderedPages:Array<{page_idx:number,png_uri:string|null,png_sha:string|null}>,
+ *   ocrPolicy?: Record<string, unknown>
+ * }} input
+ */
+async function runS7PersistOcrPages(input) {
+  return DBOS.runStep(() => persistOcrPagesStep(input), {
+    name: 'ocr-pages',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
+}
+
 async function defaultWorkflowImpl(input) {
   return runDefaultTextLane(input, {
     workflowId: DBOS.workflowID ?? 'unknown-workflow',
@@ -836,7 +1018,15 @@ async function hardDocWorkflowImpl(input) {
         pdfPath: ctx.marker?.paths?.sourcePdf,
         hardPages: gate.hard_pages
       });
-      return { gate, rendered };
+      const ocr = await runS7PersistOcrPages({
+        workflowId: ctx.workflowId,
+        docId: ctx.reserved.doc_id,
+        version: ctx.reserved.ver,
+        gateRev: gate.gate_rev,
+        renderedPages: rendered.rendered_pages,
+        ocrPolicy: input.ocrPolicy
+      });
+      return { gate, rendered, ocr };
     },
     runS4ToS5Pause,
     runS5IndexFts,

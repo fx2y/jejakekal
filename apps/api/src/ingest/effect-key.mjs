@@ -81,3 +81,17 @@ export function buildOcrPageRenderEffectKey(params) {
   const digest = assertSha256(params.pngSha256);
   return `${workflowId}|ocr-render-page|${docId}|${version}|p${pageIdx}|${digest}`;
 }
+
+/**
+ * @param {{workflowId:string,docId:string,version:number,pageIdx:number,model:string,gateRev:string,pngSha256:string}} params
+ */
+export function buildOcrPageEffectKey(params) {
+  const workflowId = assertValidRunId(params.workflowId, 'run_id');
+  const docId = assertNonEmptyString(params.docId, 'doc_id');
+  const version = assertPositiveInteger(params.version, 'version');
+  const pageIdx = assertNonNegativeInteger(params.pageIdx, 'page_idx');
+  const model = assertNonEmptyString(params.model, 'ocr_model');
+  const gateRev = assertNonEmptyString(params.gateRev, 'gate_rev');
+  const digest = assertSha256(params.pngSha256);
+  return `${workflowId}|ocr-page|${docId}|${version}|p${pageIdx}|${model}|${gateRev}|${digest}`;
+}

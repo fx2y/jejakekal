@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { request as httpRequest } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,6 +16,7 @@ import { listZipEntries } from '../../../packages/core/src/deterministic-zip.mjs
 import { parseArtifactUri } from '../src/artifact-uri.mjs';
 import { createS3BlobStore, defaultS3BlobStoreConfig } from '../src/blob/s3-store.mjs';
 import { queryRankedBlocksByTsQuery } from '../src/search/block-repository.mjs';
+import { closeServer, listenLocal } from '../src/http.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -68,6 +69,39 @@ async function waitForRunTerminal(baseUrl, runId, attempts = 80, delayMs = 25) {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
   return run;
+}
+
+async function startMockOcrServer() {
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
+      res.writeHead(404).end();
+      return;
+    }
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk.toString();
+    }
+    requests.push(body);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: [{ type: 'text', text: 'ocr text' }]
+            }
+          }
+        ]
+      })
+    );
+  });
+  const port = await listenLocal(server, 0);
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    requests,
+    close: () => closeServer(server)
+  };
 }
 
 const BASELINE_TEXT_LANE_STEPS = Object.freeze([
@@ -316,7 +350,15 @@ test('C2 hard-doc branch: gate persists and rendered pages store PNG URIs/SHAs',
     client,
     workflowId,
     value: ['scan', 'small', 'table|x'].join('\n'),
-    sleepMs: 1
+    sleepMs: 1,
+    ocrPolicy: {
+      enabled: false,
+      engine: 'vllm',
+      model: 'zai-org/GLM-OCR',
+      baseUrl: 'http://127.0.0.1:65535',
+      timeoutMs: 1000,
+      maxPages: 10
+    }
   });
   assert.ok(timeline.some((row) => row.step === 'ocr-persist-gate'));
   assert.ok(timeline.some((row) => row.step === 'ocr-render-store-pages'));
@@ -363,6 +405,81 @@ test('C2 hard-doc branch: gate persists and rendered pages store PNG URIs/SHAs',
         row.png_sha.length === 64
     )
   );
+});
+
+test('C3 hard-doc branch: OCR adapter persists raw blobs + patch rows with idempotent effect keys', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const ocr = await startMockOcrServer();
+  t.after(async () => {
+    await ocr.close();
+  });
+  const workflowId = `hard-c3-${process.pid}-${Date.now()}`;
+  const timeline = await hardDocWorkflow({
+    client,
+    workflowId,
+    value: ['scan', 'small', 'table|x'].join('\n'),
+    sleepMs: 1,
+    ocrPolicy: {
+      enabled: true,
+      engine: 'vllm',
+      model: 'zai-org/GLM-OCR',
+      baseUrl: ocr.baseUrl,
+      timeoutMs: 5000,
+      maxPages: 10
+    }
+  });
+  assert.ok(timeline.some((row) => row.step === 'ocr-pages'));
+  assert.ok(ocr.requests.length >= 1);
+
+  const ocrPages = await client.query(
+    `SELECT page_idx, status, raw_uri, raw_sha
+     FROM ocr_page
+     WHERE job_id = $1 AND status = 'ocr_ready'
+     ORDER BY page_idx ASC`,
+    [workflowId]
+  );
+  assert.ok(ocrPages.rows.length >= 1);
+  assert.ok(
+    ocrPages.rows.every(
+      (row) =>
+        typeof row.raw_uri === 'string' &&
+        row.raw_uri.startsWith('s3://mem/run/') &&
+        typeof row.raw_sha === 'string' &&
+        row.raw_sha.length === 64
+    )
+  );
+
+  const patchRows = await client.query(
+    `SELECT page_idx, patch_sha, patch, source_job_id
+     FROM ocr_patch
+     WHERE doc_id = (
+       SELECT doc_id FROM ocr_job WHERE job_id = $1
+     ) AND ver = (
+       SELECT ver FROM ocr_job WHERE job_id = $1
+     )
+     ORDER BY page_idx ASC`,
+    [workflowId]
+  );
+  assert.equal(patchRows.rows.length, ocrPages.rows.length);
+  assert.ok(
+    patchRows.rows.every(
+      (row) =>
+        typeof row.patch_sha === 'string' &&
+        row.patch_sha.length === 64 &&
+        typeof row.patch === 'object' &&
+        row.source_job_id === workflowId
+    )
+  );
+
+  const effectRows = await client.query(
+    `SELECT effect_key
+     FROM side_effects
+     WHERE effect_key LIKE $1
+     ORDER BY effect_key ASC`,
+    [`${workflowId}|ocr-page|%`]
+  );
+  assert.equal(effectRows.rows.length, ocrPages.rows.length);
 });
 
 test('C2 payload guards: no default source fallback and invalid command typed 400', async (t) => {
