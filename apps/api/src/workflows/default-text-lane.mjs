@@ -17,6 +17,7 @@ async function readMarkerJson(path, readTextFile) {
  *   runS2MarkerConvert: (input: {workflowId:string, source:string, docId:string, version:number, bundlesRoot:string, useLlm?:boolean}) => Promise<any>,
  *   runS3StoreParseOutputs: (input: {workflowId:string,rawSha:string,docId:string,version:number,markerConfigSha:string,parsed:any}) => Promise<any>,
  *   runS4NormalizeDocir: (input: {docId:string,version:number,rawSha:string,markerConfigSha:string,markerJson:Record<string, unknown>,marker:{version?:string,stdout_sha256?:string,stderr_sha256?:string},parseKeys:string[],parseShaByKey:Record<string,string>}) => Promise<any>,
+ *   runS4xAfterNormalize?: (input: {workflowId:string,reserved:{raw_sha:string,doc_id:string,ver:number,marker_config_sha:string},markerJson:Record<string, unknown>,normalized:any,ocrPolicy?:Record<string, unknown>}) => Promise<void>,
  *   runS4ToS5Pause: (pauseAfterS4Ms: number | undefined) => Promise<void>,
  *   runS5IndexFts: (input: {workflowId:string,docId:string,version:number,language?:string}) => Promise<any>,
  *   runS6EmitExecMemo: (input: {workflowId:string,docId:string,version:number,rawSha:string,markerConfigSha:string}) => Promise<any>,
@@ -65,6 +66,15 @@ export async function runDefaultTextLane(input, deps) {
     parseKeys: persisted.parse_keys,
     parseShaByKey: persisted.parse_sha_by_key
   });
+  if (deps.runS4xAfterNormalize) {
+    await deps.runS4xAfterNormalize({
+      workflowId: deps.workflowId,
+      reserved,
+      markerJson,
+      normalized,
+      ocrPolicy: input.ocrPolicy
+    });
+  }
   await deps.runS4ToS5Pause(input.pauseAfterS4Ms);
   await deps.runS5IndexFts({
     workflowId: deps.workflowId,

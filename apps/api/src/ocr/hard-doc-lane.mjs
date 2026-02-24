@@ -6,7 +6,7 @@ import { runOcrMergeSeam } from './merge-seam.mjs';
 /**
  * @param {{markerJson?:unknown}} input
  * @param {{
- *   gate?: (input:{markerJson?:unknown}) => Promise<{gate_rev:string,hard_pages:number[],score_by_page:number[],reasons:Record<string, string[]>}>,
+ *   gate?: (input:{markerJson?:unknown}) => Promise<{gate_rev:string,code_rev?:string,hard_pages:number[],score_by_page:number[],reasons:Record<string, string[]>}>,
  *   render?: (input:{hard_pages:number[]}) => Promise<{pages:Array<{page_idx:number,png_uri:string|null,png_sha:string|null}>}>,
  *   ocr?: (input:{pages:Array<{page_idx:number,png_uri:string|null,png_sha:string|null}>}) => Promise<{patches:Array<{page_idx:number,text_md:string,raw:unknown}>}>,
  *   merge?: (input:{patches:Array<{page_idx:number,text_md:string,raw:unknown}>}) => Promise<{merged_pages:number[],diff_sha:string|null}>

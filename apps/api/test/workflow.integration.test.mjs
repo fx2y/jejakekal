@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { shutdownDbosRuntime } from '../src/dbos-runtime.mjs';
 import { startApiServer } from '../src/server.mjs';
 import { mapDbosStatusToApiStatus, mapOperationOutputRow, mapWorkflowStatusRow } from '../src/runs-projections.mjs';
-import { defaultWorkflow, readOperationOutputs, readWorkflowStatus } from '../src/workflow.mjs';
+import { defaultWorkflow, hardDocWorkflow, readOperationOutputs, readWorkflowStatus } from '../src/workflow.mjs';
 import { setupDbOrSkip } from './helpers.mjs';
 import { freezeDeterminism } from '../../../packages/core/src/determinism.mjs';
 import { readBundle } from '../../../packages/core/src/run-bundle.mjs';
@@ -306,6 +306,51 @@ test('C0 contract freeze: baseline text lane function_id -> step mapping is unch
   assert.equal(run.status, 'done');
   const lane = run.timeline.map((row) => `${row.function_id}:${row.function_name}`);
   assert.deepEqual(lane, BASELINE_TEXT_LANE_STEPS);
+});
+
+test('C1 hard-doc branch: gate decisions persist to ocr_job/ocr_page without touching baseline lane', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const workflowId = `hard-c1-${process.pid}-${Date.now()}`;
+  const timeline = await hardDocWorkflow({
+    client,
+    workflowId,
+    value: ['scan', 'small', 'table|x'].join('\n'),
+    sleepMs: 1
+  });
+  assert.ok(timeline.some((row) => row.step === 'ocr-persist-gate'));
+
+  const jobRows = await client.query(
+    `SELECT job_id, doc_id, ver, gate_rev, policy
+     FROM ocr_job
+     WHERE job_id = $1`,
+    [workflowId]
+  );
+  assert.equal(jobRows.rows.length, 1);
+  assert.equal(jobRows.rows[0].job_id, workflowId);
+  assert.equal(typeof jobRows.rows[0].doc_id, 'string');
+  assert.ok(jobRows.rows[0].ver >= 1);
+  assert.equal(typeof jobRows.rows[0].gate_rev, 'string');
+  assert.equal(typeof jobRows.rows[0].policy, 'object');
+
+  const pageRows = await client.query(
+    `SELECT page_idx, status, gate_score, gate_reasons
+     FROM ocr_page
+     WHERE job_id = $1
+     ORDER BY page_idx ASC`,
+    [workflowId]
+  );
+  assert.equal(pageRows.rows.length, 3);
+  assert.deepEqual(
+    pageRows.rows.map((row) => row.page_idx),
+    [0, 1, 2]
+  );
+  assert.ok(pageRows.rows.some((row) => row.status === 'gated'));
+  assert.ok(
+    pageRows.rows.every((row) =>
+      Array.isArray(row.gate_reasons) && typeof Number(row.gate_score ?? 0) === 'number'
+    )
+  );
 });
 
 test('C2 payload guards: no default source fallback and invalid command typed 400', async (t) => {

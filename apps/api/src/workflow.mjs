@@ -1,5 +1,5 @@
 import { ensureDbosRuntime } from './dbos-runtime.mjs';
-import { startDefaultWorkflowRun } from './dbos-workflows.mjs';
+import { startDefaultWorkflowRun, startHardDocWorkflowRun } from './dbos-workflows.mjs';
 import {
   getRunHeader as readWorkflowStatus,
   getRunSteps as readOperationOutputs,
@@ -32,6 +32,21 @@ export async function defaultWorkflow(params) {
 }
 
 /**
+ * @param {{client: import('pg').Client, workflowId:string, value:string, sleepMs?: number, bundlesRoot?: string}} params
+ */
+export async function hardDocWorkflow(params) {
+  await ensureDbosRuntime();
+  const handle = await startHardDocWorkflowRun({
+    workflowId: params.workflowId,
+    value: params.value,
+    sleepMs: params.sleepMs,
+    bundlesRoot: params.bundlesRoot
+  });
+  await handle.getResult();
+  return readTimeline(params.client, handle.workflowID);
+}
+
+/**
  * Legacy custom-engine hook intentionally removed in C1 substrate swap.
  */
 export async function runWorkflow(_params) {
@@ -39,4 +54,5 @@ export async function runWorkflow(_params) {
 }
 
 export { startDefaultWorkflowRun };
+export { startHardDocWorkflowRun };
 export { readWorkflowStatus, readOperationOutputs };

@@ -23,10 +23,14 @@ import { buildIngestEffectKey } from './ingest/effect-key.mjs';
 import { defaultBundlesRootPath } from './bundles-root.mjs';
 import { resolveOcrPolicy } from './ocr/config.mjs';
 import { runDefaultTextLane } from './workflows/default-text-lane.mjs';
+import { runOcrGateSeam } from './ocr/gate-seam.mjs';
+import { insertOcrJob, upsertOcrPage } from './ocr/repository.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>) | undefined} */
 let defaultWorkflowFn;
+/** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>) | undefined} */
+let hardDocWorkflowFn;
 /** @type {((input: { failUntilAttempt?: number }) => Promise<unknown>) | undefined} */
 let flakyRetryWorkflowFn;
 const flakyAttemptByWorkflow = new Map();
@@ -635,6 +639,68 @@ async function runS4ToS5Pause(pauseAfterS4Ms) {
   await DBOS.sleep(pauseMs);
 }
 
+/**
+ * @param {{workflowId:string,docId:string,version:number,markerJson:unknown,ocrPolicy?:Record<string, unknown>}} input
+ */
+async function persistOcrGateStep(input) {
+  const gate = await runOcrGateSeam({
+    markerJson: input.markerJson,
+    gateCfg: {
+      maxPages: input.ocrPolicy?.maxPages
+    }
+  });
+  return withAppClient(async (client) => {
+    await client.query('BEGIN');
+    try {
+      const insertedJob = await insertOcrJob(client, {
+        job_id: input.workflowId,
+        doc_id: input.docId,
+        ver: input.version,
+        gate_rev: gate.gate_rev,
+        policy: {
+          max_pages: input.ocrPolicy?.maxPages ?? null
+        }
+      });
+      const hardSet = new Set(gate.hard_pages);
+      for (let pageIdx = 0; pageIdx < gate.score_by_page.length; pageIdx += 1) {
+        await upsertOcrPage(client, {
+          job_id: input.workflowId,
+          page_idx: pageIdx,
+          status: hardSet.has(pageIdx) ? 'gated' : 'skipped',
+          gate_score: gate.score_by_page[pageIdx],
+          gate_reasons: gate.reasons[String(pageIdx)] ?? []
+        });
+      }
+      await client.query('COMMIT');
+      return {
+        job_id: input.workflowId,
+        gate_rev: gate.gate_rev,
+        code_rev: gate.code_rev,
+        hard_pages: gate.hard_pages,
+        score_by_page: gate.score_by_page,
+        reasons: gate.reasons,
+        job_inserted: Boolean(insertedJob)
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  });
+}
+
+/**
+ * @param {{workflowId:string,docId:string,version:number,markerJson:unknown,ocrPolicy?:Record<string, unknown>}} input
+ */
+async function runS5PersistOcrGate(input) {
+  return DBOS.runStep(() => persistOcrGateStep(input), {
+    name: 'ocr-persist-gate',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
+}
+
 async function defaultWorkflowImpl(input) {
   return runDefaultTextLane(input, {
     workflowId: DBOS.workflowID ?? 'unknown-workflow',
@@ -645,6 +711,33 @@ async function defaultWorkflowImpl(input) {
     runS2MarkerConvert,
     runS3StoreParseOutputs,
     runS4NormalizeDocir,
+    runS4ToS5Pause,
+    runS5IndexFts,
+    runS6EmitExecMemo,
+    runS7ArtifactCount,
+    runS8ArtifactPostcondition
+  });
+}
+
+async function hardDocWorkflowImpl(input) {
+  return runDefaultTextLane(input, {
+    workflowId: DBOS.workflowID ?? 'unknown-workflow',
+    readTextFile: readFile,
+    runS0ReserveDoc,
+    runS1StoreRaw,
+    runS1Sleep,
+    runS2MarkerConvert,
+    runS3StoreParseOutputs,
+    runS4NormalizeDocir,
+    runS4xAfterNormalize: async (ctx) => {
+      await runS5PersistOcrGate({
+        workflowId: ctx.workflowId,
+        docId: ctx.reserved.doc_id,
+        version: ctx.reserved.ver,
+        markerJson: ctx.markerJson,
+        ocrPolicy: input.ocrPolicy
+      });
+    },
     runS4ToS5Pause,
     runS5IndexFts,
     runS6EmitExecMemo,
@@ -690,6 +783,7 @@ export function registerDbosWorkflows() {
     return;
   }
   defaultWorkflowFn = DBOS.registerWorkflow(defaultWorkflowImpl, { name: 'defaultWorkflow' });
+  hardDocWorkflowFn = DBOS.registerWorkflow(hardDocWorkflowImpl, { name: 'hardDocWorkflow' });
   flakyRetryWorkflowFn = DBOS.registerWorkflow(flakyRetryWorkflowImpl, { name: 'flakyRetryWorkflow' });
   workflowsRegistered = true;
 }
@@ -702,6 +796,28 @@ export async function startDefaultWorkflowRun(params) {
   const workflowFn =
     /** @type {(input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>} */ (
       defaultWorkflowFn
+    );
+  const pauseAfterS4Ms = normalizeOptionalPauseMs(process.env.JEJAKEKAL_PAUSE_AFTER_S4_MS);
+  const bundlesRoot = resolveWorkflowBundlesRoot(params.bundlesRoot);
+  const ocrPolicy = params.ocrPolicy ?? resolveOcrPolicy(process.env);
+  return startWorkflowWithConflictRecovery(workflowFn, params, {
+    value: params.value,
+    sleepMs: params.sleepMs,
+    bundlesRoot,
+    useLlm: params.useLlm,
+    pauseAfterS4Ms,
+    ocrPolicy
+  });
+}
+
+/**
+ * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, ocrPolicy?: Record<string, unknown>}} params
+ */
+export async function startHardDocWorkflowRun(params) {
+  registerDbosWorkflows();
+  const workflowFn =
+    /** @type {(input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>} */ (
+      hardDocWorkflowFn
     );
   const pauseAfterS4Ms = normalizeOptionalPauseMs(process.env.JEJAKEKAL_PAUSE_AFTER_S4_MS);
   const bundlesRoot = resolveWorkflowBundlesRoot(params.bundlesRoot);
