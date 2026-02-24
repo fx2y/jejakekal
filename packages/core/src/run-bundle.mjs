@@ -79,7 +79,8 @@ export function makeManifest(opts) {
  * toolIO: unknown[],
  * artifacts: unknown[],
  * citations: unknown[],
- * extraJsonFiles?: Record<string, unknown>
+ * extraJsonFiles?: Record<string, unknown>,
+ * extraTextFiles?: Record<string, string>
  * }} bundle
  */
 export async function writeRunBundle(dir, bundle) {
@@ -93,12 +94,18 @@ export async function writeRunBundle(dir, bundle) {
     'citations.json': bundle.citations,
     ...(bundle.extraJsonFiles ?? {})
   };
+  const textFiles = bundle.extraTextFiles ?? {};
 
   /** @type {Record<string,string>} */
   const hashes = {};
   for (const [filename, value] of Object.entries(files)) {
     const payload = stableJson(/** @type {Record<string, unknown>} */ (value));
     await writeFile(join(dir, filename), `${payload}\n`, 'utf8');
+    hashes[filename] = sha256(payload);
+  }
+  for (const [filename, text] of Object.entries(textFiles)) {
+    const payload = String(text);
+    await writeFile(join(dir, filename), payload.endsWith('\n') ? payload : `${payload}\n`, 'utf8');
     hashes[filename] = sha256(payload);
   }
 

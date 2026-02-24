@@ -6,7 +6,9 @@ import { createDeterministicZip } from '../../../packages/core/src/deterministic
  * @param {string} bundleDir
  */
 export async function buildRunBundleZip(bundleDir) {
-  const names = (await readdir(bundleDir)).filter((name) => name.endsWith('.json')).sort();
+  const names = (await readdir(bundleDir))
+    .filter((name) => name.endsWith('.json') || name.endsWith('.md'))
+    .sort();
   const entries = await Promise.all(
     names.map(async (name) => ({
       name,

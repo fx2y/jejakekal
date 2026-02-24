@@ -146,6 +146,25 @@ CREATE TABLE IF NOT EXISTS docir_page_version (
 CREATE INDEX IF NOT EXISTS docir_page_version_doc_ver_idx
   ON docir_page_version (doc_id, ver, page_idx, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS docir_page_diff (
+  doc_id TEXT NOT NULL,
+  ver INTEGER NOT NULL CHECK (ver >= 1),
+  page_idx INTEGER NOT NULL CHECK (page_idx >= 0),
+  before_sha TEXT NOT NULL CHECK (before_sha ~ '^[a-f0-9]{64}$'),
+  after_sha TEXT NOT NULL CHECK (after_sha ~ '^[a-f0-9]{64}$'),
+  changed_blocks INTEGER NOT NULL CHECK (changed_blocks >= 0),
+  page_diff_sha TEXT NOT NULL CHECK (page_diff_sha ~ '^[a-f0-9]{64}$'),
+  diff_sha TEXT NOT NULL CHECK (diff_sha ~ '^[a-f0-9]{64}$'),
+  source_job_id TEXT REFERENCES ocr_job (job_id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (doc_id, ver, page_idx, page_diff_sha),
+  FOREIGN KEY (doc_id, ver) REFERENCES doc_ver (doc_id, ver) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS docir_page_diff_doc_ver_idx
+  ON docir_page_diff (doc_id, ver, page_idx, created_at DESC);
+CREATE INDEX IF NOT EXISTS docir_page_diff_job_idx ON docir_page_diff (source_job_id, created_at DESC);
+
 CREATE OR REPLACE FUNCTION deny_artifact_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'artifact_immutable';

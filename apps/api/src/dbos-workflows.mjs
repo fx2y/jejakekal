@@ -17,16 +17,34 @@ import {
 import { createS3BlobStore, defaultS3BlobStoreConfig } from './blob/s3-store.mjs';
 import { MARKER_CONFIG_PLACEHOLDER_SHA, reserveDocVersion } from './ingest/doc-repository.mjs';
 import { buildExecMemoMarkdown } from './ingest/exec-memo.mjs';
-import { listBlocksByDocVersion, populateBlockTsv, upsertBlockLedger } from './search/block-repository.mjs';
+import {
+  deleteTextTableBlocksByPages,
+  listBlocksByDocVersion,
+  populateBlockTsv,
+  populateBlockTsvForPages,
+  upsertBlockLedger
+} from './search/block-repository.mjs';
 import { callIdempotentEffect } from './effects.mjs';
 import { buildIngestEffectKey, buildOcrPageEffectKey, buildOcrPageRenderEffectKey } from './ingest/effect-key.mjs';
 import { defaultBundlesRootPath } from './bundles-root.mjs';
 import { resolveOcrPolicy } from './ocr/config.mjs';
 import { runDefaultTextLane } from './workflows/default-text-lane.mjs';
 import { runOcrGateSeam } from './ocr/gate-seam.mjs';
-import { insertOcrJob, insertOcrPatch, updateOcrPageRender, updateOcrPageResult, upsertOcrPage } from './ocr/repository.mjs';
+import {
+  insertDocirPageDiff,
+  insertDocirPageVersion,
+  insertOcrJob,
+  insertOcrPatch,
+  listDocirPageDiffByJob,
+  listLatestOcrPatchesByDocVersion,
+  listOcrPagesByJobStatus,
+  updateOcrPageRender,
+  updateOcrPageResult,
+  upsertOcrPage
+} from './ocr/repository.mjs';
 import { runOcrRenderSeam } from './ocr/render-seam.mjs';
 import { runOcrEngineSeam } from './ocr/engine-seam.mjs';
+import { runOcrMergeSeam } from './ocr/merge-seam.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>) | undefined} */
@@ -441,12 +459,29 @@ async function emitExecMemoStep(input) {
       docId: input.docId,
       version: input.version
     });
+    const ocrPages = await listOcrPagesByJobStatus(client, {
+      job_id: input.workflowId,
+      status: 'ocr_ready'
+    });
+    const ocrPageRows = await listOcrPagesByJobStatus(client, {
+      job_id: input.workflowId
+    });
+    const pageDiffRows = await listDocirPageDiffByJob(client, {
+      source_job_id: input.workflowId
+    });
+    const hardPages = ocrPageRows.filter((row) => row.status === 'gated' || row.status === 'rendered' || row.status === 'ocr_ready').map((row) => row.page_idx);
+    const diffSha = pageDiffRows[0]?.diff_sha ?? null;
     const markdown = buildExecMemoMarkdown({
       docId: input.docId,
       version: input.version,
       rawSha: input.rawSha,
       markerConfigSha: input.markerConfigSha,
-      blocks
+      blocks,
+      ocr: {
+        hard_pages: [...new Set(hardPages)].sort((a, b) => a - b),
+        ocr_pages: ocrPages.map((row) => row.page_idx).sort((a, b) => a - b),
+        diff_sha: typeof diffSha === 'string' ? diffSha : null
+      }
     });
     const payload = Buffer.from(markdown, 'utf8');
     const artifactSha = sha256(payload);
@@ -975,6 +1010,143 @@ async function runS7PersistOcrPages(input) {
   });
 }
 
+/**
+ * @param {{
+ *   workflowId:string,
+ *   docId:string,
+ *   version:number,
+ *   hardPages:number[],
+ *   rawSha:string,
+ *   markerConfigSha:string
+ * }} input
+ */
+async function mergeOcrIntoDocirStep(input) {
+  return withAppClient(async (client) => {
+    const currentBlocks = await listBlocksByDocVersion(client, {
+      docId: input.docId,
+      version: input.version
+    });
+    const patches = await listLatestOcrPatchesByDocVersion(client, {
+      doc_id: input.docId,
+      ver: input.version,
+      source_job_id: input.workflowId
+    });
+    const merge = await runOcrMergeSeam({
+      docId: input.docId,
+      version: input.version,
+      hardPages: input.hardPages,
+      currentBlocks,
+      patches: patches.map((row) => ({
+        page_idx: row.page_idx,
+        patch:
+          row.patch && typeof row.patch === 'object' && !Array.isArray(row.patch)
+            ? /** @type {Record<string, unknown>} */ (row.patch)
+            : {}
+      }))
+    });
+    const mergedPages = Array.isArray(merge.merged_pages) ? merge.merged_pages : [];
+    const diffSha = typeof merge.diff_sha === 'string' ? merge.diff_sha : null;
+    if (mergedPages.length < 1 || !diffSha) {
+      return { merged_pages: [], changed_blocks: 0, diff_sha: null };
+    }
+    const pageNumbers = mergedPages.map((page) => page + 1);
+    await client.query('BEGIN');
+    try {
+      await deleteTextTableBlocksByPages(client, {
+        docId: input.docId,
+        version: input.version,
+        pageNumbers
+      });
+      const replacementBlocks = merge.replacement_blocks
+        .filter((row) => Number.isInteger(row.page) && row.page >= 1)
+        .sort((a, b) => a.page - b.page || a.block_id.localeCompare(b.block_id));
+      if (replacementBlocks.length > 0) {
+        await upsertBlockLedger(client, {
+          docId: input.docId,
+          version: input.version,
+          blocks: replacementBlocks,
+          provenance: {
+            version: 1,
+            doc_id: input.docId,
+            ver: input.version,
+            hash: {
+              raw_sha256: input.rawSha,
+              diff_sha256: diffSha
+            },
+            parser: {
+              marker_cfg_sha: input.markerConfigSha
+            },
+            merge: {
+              source: 'ocr',
+              source_job_id: input.workflowId,
+              merged_pages: mergedPages
+            }
+          }
+        });
+      }
+      const pageDiffs = Array.isArray(merge.page_diffs) ? merge.page_diffs : [];
+      for (const row of pageDiffs) {
+        await insertDocirPageVersion(client, {
+          doc_id: input.docId,
+          ver: input.version,
+          page_idx: row.page_idx,
+          page_sha: row.after_sha,
+          source: 'ocr-merge',
+          source_ref_sha: row.diff_sha
+        });
+        await insertDocirPageDiff(client, {
+          doc_id: input.docId,
+          ver: input.version,
+          page_idx: row.page_idx,
+          before_sha: row.before_sha,
+          after_sha: row.after_sha,
+          changed_blocks: row.changed_blocks,
+          page_diff_sha: row.diff_sha,
+          diff_sha: diffSha,
+          source_job_id: input.workflowId
+        });
+      }
+      await populateBlockTsvForPages(client, {
+        docId: input.docId,
+        version: input.version,
+        pageNumbers
+      });
+      await client.query('COMMIT');
+      return {
+        merged_pages: mergedPages,
+        changed_blocks: pageDiffs.reduce(
+          (sum, row) => sum + Math.max(0, Math.trunc(Number(row.changed_blocks ?? 0))),
+          0
+        ),
+        diff_sha: diffSha
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  });
+}
+
+/**
+ * @param {{
+ *   workflowId:string,
+ *   docId:string,
+ *   version:number,
+ *   hardPages:number[],
+ *   rawSha:string,
+ *   markerConfigSha:string
+ * }} input
+ */
+async function runS8MergeOcrDiff(input) {
+  return DBOS.runStep(() => mergeOcrIntoDocirStep(input), {
+    name: 'ocr-merge-diff',
+    retriesAllowed: true,
+    intervalSeconds: 1,
+    backoffRate: 2,
+    maxAttempts: 3
+  });
+}
+
 async function defaultWorkflowImpl(input) {
   return runDefaultTextLane(input, {
     workflowId: DBOS.workflowID ?? 'unknown-workflow',
@@ -1026,7 +1198,15 @@ async function hardDocWorkflowImpl(input) {
         renderedPages: rendered.rendered_pages,
         ocrPolicy: input.ocrPolicy
       });
-      return { gate, rendered, ocr };
+      const merge = await runS8MergeOcrDiff({
+        workflowId: ctx.workflowId,
+        docId: ctx.reserved.doc_id,
+        version: ctx.reserved.ver,
+        hardPages: gate.hard_pages,
+        rawSha: ctx.reserved.raw_sha,
+        markerConfigSha: ctx.reserved.marker_config_sha
+      });
+      return { gate, rendered, ocr, merge };
     },
     runS4ToS5Pause,
     runS5IndexFts,

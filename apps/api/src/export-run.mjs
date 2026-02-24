@@ -8,6 +8,7 @@ import { assertArtifactBlobsReadable } from './artifact-blobs.mjs';
 import { listArtifactsByRunId } from './artifacts/repository.mjs';
 import { assertFrozenArtifactType } from './contracts.mjs';
 import { buildIngestManifestSummary } from './export/ingest-summary.mjs';
+import { buildOcrBundleSidecars } from './export/ocr-sidecars.mjs';
 
 function trimPreview(source) {
   return source.replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -148,6 +149,7 @@ export async function exportRunBundle(params) {
     stepSummaries,
     ingest: buildIngestManifestSummary(run.timeline)
   });
+  const ocrSidecars = await buildOcrBundleSidecars(params.client, params.runId);
 
   await writeRunBundle(bundleDir, {
     manifest,
@@ -164,7 +166,12 @@ export async function exportRunBundle(params) {
         sha256: artifact.sha256 ?? null,
         uri: artifact.uri ?? null,
         prov: artifact.prov ?? {}
-      }))
+      })),
+      ...(ocrSidecars ? { 'ocr_pages.json': ocrSidecars.ocr_pages } : {})
+    },
+    extraTextFiles: {
+      ...(ocrSidecars ? { 'ocr_report.md': ocrSidecars.ocr_report_md } : {}),
+      ...(ocrSidecars?.diff_summary_md ? { 'diff_summary.md': ocrSidecars.diff_summary_md } : {})
     }
   });
 

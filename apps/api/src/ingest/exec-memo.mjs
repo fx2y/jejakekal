@@ -55,7 +55,8 @@ function excerptRows(blocks) {
  *  version: number,
  *  rawSha: string,
  *  markerConfigSha?: string,
- *  blocks: Array<{block_id:string,type:string,page:number,text:string|null,data:Record<string, unknown>}>
+ *  blocks: Array<{block_id:string,type:string,page:number,text:string|null,data:Record<string, unknown>}>,
+ *  ocr?: {hard_pages?: number[], ocr_pages?: number[], diff_sha?: string | null}
  * }} params
  */
 export function buildExecMemoMarkdown(params) {
@@ -73,6 +74,22 @@ export function buildExecMemoMarkdown(params) {
   lines.push('## Key excerpts (block refs)');
   for (const row of excerptRows(params.blocks)) {
     lines.push(`- [b:${row.block_id}] (p${row.page}) ${row.excerpt}`);
+  }
+
+  const hardPages = Array.isArray(params.ocr?.hard_pages)
+    ? [...new Set(params.ocr.hard_pages.map((row) => Number(row)).filter((row) => Number.isInteger(row) && row >= 0))].sort((a, b) => a - b)
+    : [];
+  const ocrPages = Array.isArray(params.ocr?.ocr_pages)
+    ? [...new Set(params.ocr.ocr_pages.map((row) => Number(row)).filter((row) => Number.isInteger(row) && row >= 0))].sort((a, b) => a - b)
+    : [];
+  const diffSha = typeof params.ocr?.diff_sha === 'string' && params.ocr.diff_sha.length > 0 ? params.ocr.diff_sha : null;
+  if (hardPages.length > 0 || ocrPages.length > 0 || diffSha) {
+    lines.push('## OCR merge');
+    lines.push(`- hard_pages: ${hardPages.length > 0 ? hardPages.join(',') : 'none'}`);
+    lines.push(`- ocr_pages: ${ocrPages.length > 0 ? ocrPages.join(',') : 'none'}`);
+    if (diffSha) {
+      lines.push(`- diff_sha: ${diffSha}`);
+    }
   }
 
   return `${lines.join('\n').trim()}\n`;

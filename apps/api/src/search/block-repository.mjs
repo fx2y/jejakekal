@@ -129,3 +129,42 @@ export async function listBlocksByDocVersion(client, params) {
     block_sha: String(row.block_sha)
   }));
 }
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{docId:string, version:number, pageNumbers:number[]}} params
+ */
+export async function deleteTextTableBlocksByPages(client, params) {
+  const pages = [...new Set(params.pageNumbers.map((page) => Number(page)).filter((page) => Number.isInteger(page) && page >= 1))].sort(
+    (a, b) => a - b
+  );
+  if (pages.length < 1) return { deleted: 0 };
+  const result = await client.query(
+    `DELETE FROM block
+     WHERE doc_id = $1
+       AND ver = $2
+       AND page = ANY($3::int[])
+       AND type IN ('text','table')`,
+    [params.docId, params.version, pages]
+  );
+  return { deleted: result.rowCount };
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{docId:string, version:number, pageNumbers:number[], language?:string}} params
+ */
+export async function populateBlockTsvForPages(client, params) {
+  const pages = [...new Set(params.pageNumbers.map((page) => Number(page)).filter((page) => Number.isInteger(page) && page >= 1))].sort(
+    (a, b) => a - b
+  );
+  if (pages.length < 1) return { indexed: 0 };
+  const language = resolveFtsLanguage(params.language);
+  const result = await client.query(
+    `UPDATE block
+     SET tsv = to_tsvector($3::regconfig, coalesce(text, ''))
+     WHERE doc_id = $1 AND ver = $2 AND page = ANY($4::int[])`,
+    [params.docId, params.version, language, pages]
+  );
+  return { indexed: result.rowCount };
+}

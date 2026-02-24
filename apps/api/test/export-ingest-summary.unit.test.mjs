@@ -33,6 +33,20 @@ test('ingest summary builder maps workflow step outputs additively', () => {
     {
       function_name: 'index-fts',
       output: { indexed: 11 }
+    },
+    {
+      function_name: 'ocr-persist-gate',
+      output: { hard_pages: [2, 0] }
+    },
+    {
+      function_name: 'ocr-pages',
+      output: {
+        ocr_pages: [{ page_idx: 2 }]
+      }
+    },
+    {
+      function_name: 'ocr-merge-diff',
+      output: { diff_sha: 'd'.repeat(64) }
     }
   ]);
 
@@ -47,4 +61,7 @@ test('ingest summary builder maps workflow step outputs additively', () => {
   assert.equal(summary.counts.fts_indexed, 11);
   assert.equal(summary.timing_ms.marker, 42);
   assert.equal(summary.stderr_ref, 'c'.repeat(64));
+  assert.deepEqual(summary.ocr.hard_pages, [0, 2]);
+  assert.deepEqual(summary.ocr.ocr_pages, [2]);
+  assert.equal(summary.ocr.diff_sha, 'd'.repeat(64));
 });

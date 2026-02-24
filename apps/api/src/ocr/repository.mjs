@@ -230,6 +230,92 @@ export async function updateOcrPageResult(client, row) {
 }
 
 /**
+ * @param {import('pg').Client} client
+ * @param {{job_id:string, status?:string}} params
+ */
+export async function listOcrPagesByJobStatus(client, params) {
+  const status = params.status == null ? null : assertNonEmptyString(params.status, 'status');
+  const result = await client.query(
+    `SELECT job_id, page_idx, status, gate_score, gate_reasons, png_uri, png_sha, raw_uri, raw_sha, created_at
+     FROM ocr_page
+     WHERE job_id = $1
+       AND ($2::text IS NULL OR status = $2)
+     ORDER BY page_idx ASC`,
+    [assertNonEmptyString(params.job_id, 'job_id'), status]
+  );
+  return result.rows.map((row) => mapOcrPageRow(row));
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{doc_id:string,ver:number,source_job_id?:string|null}} params
+ */
+export async function listLatestOcrPatchesByDocVersion(client, params) {
+  const sourceJobId =
+    params.source_job_id == null ? null : assertNonEmptyString(params.source_job_id, 'source_job_id');
+  const result = await client.query(
+    `SELECT DISTINCT ON (page_idx) doc_id, ver, page_idx, patch_sha, patch, source_job_id, created_at
+     FROM ocr_patch
+     WHERE doc_id = $1
+       AND ver = $2
+       AND ($3::text IS NULL OR source_job_id = $3)
+     ORDER BY page_idx ASC, created_at DESC, patch_sha DESC`,
+    [assertNonEmptyString(params.doc_id, 'doc_id'), assertPositiveInt(params.ver, 'ver'), sourceJobId]
+  );
+  return result.rows.map((row) => mapOcrPatchRow(row));
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{
+ *   doc_id:string,
+ *   ver:number,
+ *   page_idx:number,
+ *   before_sha:string,
+ *   after_sha:string,
+ *   changed_blocks:number,
+ *   page_diff_sha:string,
+ *   diff_sha:string,
+ *   source_job_id?:string|null
+ * }} row
+ */
+export async function insertDocirPageDiff(client, row) {
+  const result = await client.query(
+    `INSERT INTO docir_page_diff (doc_id, ver, page_idx, before_sha, after_sha, changed_blocks, page_diff_sha, diff_sha, source_job_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     ON CONFLICT (doc_id, ver, page_idx, page_diff_sha) DO NOTHING
+     RETURNING doc_id, ver, page_idx, before_sha, after_sha, changed_blocks, page_diff_sha, diff_sha, source_job_id, created_at`,
+    [
+      assertNonEmptyString(row.doc_id, 'doc_id'),
+      assertPositiveInt(row.ver, 'ver'),
+      assertNonNegativeInt(row.page_idx, 'page_idx'),
+      assertSha256(row.before_sha, 'before_sha'),
+      assertSha256(row.after_sha, 'after_sha'),
+      assertNonNegativeInt(row.changed_blocks, 'changed_blocks'),
+      assertSha256(row.page_diff_sha, 'page_diff_sha'),
+      assertSha256(row.diff_sha, 'diff_sha'),
+      row.source_job_id == null ? null : assertNonEmptyString(row.source_job_id, 'source_job_id')
+    ]
+  );
+  return result.rows[0] ? mapDocirPageDiffRow(result.rows[0]) : null;
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{source_job_id:string}} params
+ */
+export async function listDocirPageDiffByJob(client, params) {
+  const result = await client.query(
+    `SELECT doc_id, ver, page_idx, before_sha, after_sha, changed_blocks, page_diff_sha, diff_sha, source_job_id, created_at
+     FROM docir_page_diff
+     WHERE source_job_id = $1
+     ORDER BY page_idx ASC, created_at DESC`,
+    [assertNonEmptyString(params.source_job_id, 'source_job_id')]
+  );
+  return result.rows.map((row) => mapDocirPageDiffRow(row));
+}
+
+/**
  * @param {Record<string, unknown>} row
  */
 export function mapOcrJobRow(row) {
@@ -288,6 +374,24 @@ export function mapDocirPageVersionRow(row) {
     page_sha: String(row.page_sha),
     source: String(row.source),
     source_ref_sha: typeof row.source_ref_sha === 'string' ? row.source_ref_sha : null,
+    created_at: row.created_at ? new Date(String(row.created_at)).toISOString() : null
+  };
+}
+
+/**
+ * @param {Record<string, unknown>} row
+ */
+export function mapDocirPageDiffRow(row) {
+  return {
+    doc_id: String(row.doc_id),
+    ver: Number(row.ver),
+    page_idx: Number(row.page_idx),
+    before_sha: String(row.before_sha),
+    after_sha: String(row.after_sha),
+    changed_blocks: Number(row.changed_blocks),
+    page_diff_sha: String(row.page_diff_sha),
+    diff_sha: String(row.diff_sha),
+    source_job_id: typeof row.source_job_id === 'string' ? row.source_job_id : null,
     created_at: row.created_at ? new Date(String(row.created_at)).toISOString() : null
   };
 }

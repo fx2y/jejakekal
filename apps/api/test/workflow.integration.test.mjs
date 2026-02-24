@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { shutdownDbosRuntime } from '../src/dbos-runtime.mjs';
@@ -17,6 +17,7 @@ import { parseArtifactUri } from '../src/artifact-uri.mjs';
 import { createS3BlobStore, defaultS3BlobStoreConfig } from '../src/blob/s3-store.mjs';
 import { queryRankedBlocksByTsQuery } from '../src/search/block-repository.mjs';
 import { closeServer, listenLocal } from '../src/http.mjs';
+import { exportRunBundle } from '../src/export-run.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -480,6 +481,89 @@ test('C3 hard-doc branch: OCR adapter persists raw blobs + patch rows with idemp
     [`${workflowId}|ocr-page|%`]
   );
   assert.equal(effectRows.rows.length, ocrPages.rows.length);
+});
+
+test('C4 hard-doc branch: merged OCR diffs persist lineage rows and export sidecars', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const bundlesRoot = await mkdtemp(join(tmpdir(), 'jejakekal-c4-hard-doc-bundles-'));
+  t.after(async () => {
+    await rm(bundlesRoot, { recursive: true, force: true });
+  });
+  const ocr = await startMockOcrServer();
+  t.after(async () => {
+    await ocr.close();
+  });
+  const workflowId = `hard-c4-${process.pid}-${Date.now()}`;
+  const timeline = await hardDocWorkflow({
+    client,
+    workflowId,
+    bundlesRoot,
+    value: ['scan', 'small', 'table|x'].join('\n'),
+    sleepMs: 1,
+    ocrPolicy: {
+      enabled: true,
+      engine: 'vllm',
+      model: 'zai-org/GLM-OCR',
+      baseUrl: ocr.baseUrl,
+      timeoutMs: 5000,
+      maxPages: 10
+    }
+  });
+  assert.ok(timeline.some((row) => row.step === 'ocr-merge-diff'));
+
+  const diffRows = await client.query(
+    `SELECT page_idx, before_sha, after_sha, changed_blocks, page_diff_sha, diff_sha
+     FROM docir_page_diff
+     WHERE source_job_id = $1
+     ORDER BY page_idx ASC`,
+    [workflowId]
+  );
+  assert.ok(diffRows.rows.length >= 1);
+  assert.ok(
+    diffRows.rows.every(
+      (row) =>
+        typeof row.before_sha === 'string' &&
+        row.before_sha.length === 64 &&
+        typeof row.after_sha === 'string' &&
+        row.after_sha.length === 64 &&
+        Number(row.changed_blocks) >= 0 &&
+        typeof row.page_diff_sha === 'string' &&
+        row.page_diff_sha.length === 64 &&
+        typeof row.diff_sha === 'string' &&
+        row.diff_sha.length === 64
+    )
+  );
+
+  const pageVerRows = await client.query(
+    `SELECT page_idx, page_sha, source, source_ref_sha
+     FROM docir_page_version
+     WHERE doc_id = (SELECT doc_id FROM ocr_job WHERE job_id = $1)
+       AND ver = (SELECT ver FROM ocr_job WHERE job_id = $1)
+       AND source = 'ocr-merge'
+     ORDER BY page_idx ASC`,
+    [workflowId]
+  );
+  assert.ok(pageVerRows.rows.length >= 1);
+  assert.ok(
+    pageVerRows.rows.every(
+      (row) =>
+        typeof row.page_sha === 'string' &&
+        row.page_sha.length === 64 &&
+        typeof row.source_ref_sha === 'string' &&
+        row.source_ref_sha.length === 64
+    )
+  );
+
+  const s3Store = createS3BlobStore(defaultS3BlobStoreConfig());
+  const exported = await exportRunBundle({ client, bundlesRoot, runId: workflowId, s3Store });
+  assert.equal(exported?.run_id, workflowId);
+  const reportMd = await readFile(join(exported.run_bundle_path, 'ocr_report.md'), 'utf8');
+  const diffMd = await readFile(join(exported.run_bundle_path, 'diff_summary.md'), 'utf8');
+  assert.equal(reportMd.includes('# OCR report'), true);
+  assert.equal(diffMd.includes('# OCR diff summary'), true);
+  const bundle = await readBundle(exported.run_bundle_path);
+  assert.ok(Array.isArray(bundle['ocr_pages.json']));
 });
 
 test('C2 payload guards: no default source fallback and invalid command typed 400', async (t) => {
