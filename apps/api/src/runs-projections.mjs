@@ -15,22 +15,64 @@ function parseDbosCell(value) {
   }
 }
 
+const SANITIZED_SENTINEL = Symbol('sanitized');
+
 /**
  * @param {unknown} value
  */
 function stripSourceFields(value) {
+  if (typeof value === 'string' && isLocalPathLikeValue(value)) {
+    return SANITIZED_SENTINEL;
+  }
   if (Array.isArray(value)) {
-    return value.map((entry) => stripSourceFields(entry));
+    return value
+      .map((entry) => stripSourceFields(entry))
+      .filter((entry) => entry !== SANITIZED_SENTINEL);
   }
   if (!value || typeof value !== 'object') {
     return value;
   }
   const out = {};
   for (const key of Object.keys(/** @type {Record<string, unknown>} */ (value)).sort((a, b) => a.localeCompare(b))) {
-    if (key === 'source') continue;
-    out[key] = stripSourceFields(/** @type {Record<string, unknown>} */ (value)[key]);
+    if (isSanitizedControlField(key)) continue;
+    const sanitized = stripSourceFields(/** @type {Record<string, unknown>} */ (value)[key]);
+    if (sanitized === SANITIZED_SENTINEL) continue;
+    out[key] = sanitized;
   }
   return out;
+}
+
+/**
+ * @param {string} key
+ */
+function isSanitizedControlField(key) {
+  const normalized = key.trim().toLowerCase();
+  if (
+    normalized === 'source' ||
+    normalized === 'sourcepdf' ||
+    normalized === 'source_pdf' ||
+    normalized === 'path' ||
+    normalized === 'paths' ||
+    normalized === 'file_path' ||
+    normalized === 'filepath' ||
+    normalized === 'local_path' ||
+    normalized === 'localpath'
+  ) {
+    return true;
+  }
+  return normalized.endsWith('_path') || normalized.endsWith('path');
+}
+
+/**
+ * @param {string} value
+ */
+function isLocalPathLikeValue(value) {
+  return (
+    value.startsWith('/') ||
+    value.startsWith('./') ||
+    value.startsWith('../') ||
+    /^[A-Za-z]:[\\/]/.test(value)
+  );
 }
 
 /**
@@ -39,7 +81,8 @@ function stripSourceFields(value) {
  * @param {unknown} output
  */
 function sanitizeOutput(_functionName, output) {
-  return stripSourceFields(output);
+  const sanitized = stripSourceFields(output);
+  return sanitized === SANITIZED_SENTINEL ? null : sanitized;
 }
 
 /**

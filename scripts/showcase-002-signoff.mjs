@@ -315,13 +315,25 @@ async function cancelWorkflow(runId) {
 }
 
 async function main() {
+  const requireLiveOcr = process.env.SHOWCASE_LIVE_OCR === '1';
+  const enforceReleaseCi =
+    process.env.SHOWCASE_SKIP_CI === '1'
+      ? false
+      : process.env.SHOWCASE_ENFORCE_CI === '0'
+        ? false
+        : true;
   const summary = {
     showcase: '002',
     date_utc: new Date().toISOString(),
     ok: false,
+    release_evidence: false,
     failed_step_ids: /** @type {string[]} */ ([]),
     steps: /** @type {Array<Record<string, unknown>>} */ ([]),
-    samples: {}
+    samples: {},
+    policy: {
+      require_live_ocr: requireLiveOcr,
+      enforce_release_ci: enforceReleaseCi
+    }
   };
   await mkdir('.cache', { recursive: true });
 
@@ -418,8 +430,13 @@ async function main() {
     });
 
     await step('setup.ocr_health', async () => {
-      ocrMock = await startMockOcrServer({ text: 'showcase ocr text' });
-      ocrBaseUrl = ocrMock.baseUrl;
+      if (requireLiveOcr) {
+        ocrBaseUrl = String(process.env.OCR_BASE_URL || '').trim();
+        assert(ocrBaseUrl.length > 0, 'SHOWCASE_LIVE_OCR=1 requires OCR_BASE_URL');
+      } else {
+        ocrMock = await startMockOcrServer({ text: 'showcase ocr text' });
+        ocrBaseUrl = ocrMock.baseUrl;
+      }
       const health = await runCommand('mise', [
         'run',
         'wait:health',
@@ -429,7 +446,7 @@ async function main() {
         '100'
       ]);
       assert(health.ok, `ocr health gate failed: ${health.stderr || health.stdout}`);
-      return { mode: 'mock', ocr_base_url: ocrBaseUrl };
+      return { mode: requireLiveOcr ? 'live' : 'mock', ocr_base_url: ocrBaseUrl };
     });
 
     await step('api.start', async () => {
@@ -779,7 +796,7 @@ async function main() {
       return { workflow_id: getJson.workflowID, steps: cliTimeline.length };
     });
 
-    if (process.env.SHOWCASE_ENFORCE_CI === '1') {
+    if (enforceReleaseCi) {
       await step('release.ci', async () => {
         const result = await runCommand('mise', ['run', '--force', 'ci'], { env: stackEnv });
         assert(result.ok, `mise run ci failed: ${result.stderr || result.stdout}`);
@@ -794,11 +811,12 @@ async function main() {
         return {
           skipped: true,
           release_ci_executed: false,
-          reason: 'set SHOWCASE_ENFORCE_CI=1 to enforce full release gate'
+          reason: 'skip requested via SHOWCASE_SKIP_CI=1 or SHOWCASE_ENFORCE_CI=0'
         };
       });
     }
 
+    summary.release_evidence = requireLiveOcr && enforceReleaseCi;
     summary.ok = true;
   } catch {
     summary.ok = false;
