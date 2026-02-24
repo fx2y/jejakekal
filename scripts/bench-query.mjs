@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { makeClient } from '../apps/api/src/db.mjs';
 import { queryRankedBlocksByTsQuery } from '../apps/api/src/retrieval/service.mjs';
+import { inspectLexicalQuery } from '../apps/api/src/search/block-repository.mjs';
 import { percentile, postRun, resetBenchState, waitForRunTerminal, withApiServer } from './bench-lib.mjs';
 
 const BENCH_RUNS = 80;
@@ -20,6 +21,13 @@ async function main() {
     const client = makeClient();
     await client.connect();
     try {
+      const diag = await inspectLexicalQuery(client, {
+        query: QUERY,
+        language: 'english'
+      });
+      if (!diag.indexable) {
+        throw new Error(`bench_query_not_indexable:${diag.query}`);
+      }
       const runs = [];
       for (let i = 0; i < BENCH_RUNS; i += 1) {
         const start = performance.now();

@@ -19,6 +19,7 @@ import { queryRankedBlocksByTsQuery } from '../src/retrieval/service.mjs';
 import { closeServer, listenLocal } from '../src/http.mjs';
 import { exportRunBundle } from '../src/export-run.mjs';
 import { deriveHardDocWorkflowId } from '../src/runs-service.mjs';
+import { buildLexicalHeadline, inspectLexicalQuery } from '../src/search/block-repository.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -1157,6 +1158,103 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
     scope: { namespaces: ['default'] }
   });
   assert.deepEqual(misses, []);
+
+  const invoiceAlphaRow = await client.query(
+    `SELECT block_id
+     FROM doc_block
+     WHERE doc_id = $1
+       AND ver = $2
+       AND text ILIKE '%invoice alpha%'
+     ORDER BY block_id ASC
+     LIMIT 1`,
+    [blockRows.rows[0].doc_id, blockRows.rows[0].ver]
+  );
+  assert.equal(invoiceAlphaRow.rows.length, 1);
+  const gammaRow = await client.query(
+    `SELECT block_id
+     FROM doc_block
+     WHERE doc_id = $1
+       AND ver = $2
+       AND text ILIKE '%gamma%'
+     ORDER BY block_id ASC
+     LIMIT 1`,
+    [blockRows.rows[0].doc_id, blockRows.rows[0].ver]
+  );
+  assert.equal(gammaRow.rows.length, 1);
+  const betaRows = await client.query(
+    `SELECT block_id
+     FROM doc_block
+     WHERE doc_id = $1
+       AND ver = $2
+       AND text ILIKE '%beta%'
+     ORDER BY block_id ASC`,
+    [blockRows.rows[0].doc_id, blockRows.rows[0].ver]
+  );
+  const betaBlockIds = new Set(betaRows.rows.map((row) => String(row.block_id)));
+
+  const phraseHitsA = await queryRankedBlocksByTsQuery(client, {
+    query: '"invoice alpha"',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
+  const phraseHitsB = await queryRankedBlocksByTsQuery(client, {
+    query: '"invoice alpha"',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
+  assert.equal(phraseHitsA.length >= 1, true);
+  assert.equal(phraseHitsA[0].block_id, String(invoiceAlphaRow.rows[0].block_id));
+  assert.deepEqual(
+    phraseHitsA.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`),
+    phraseHitsB.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`)
+  );
+
+  const orHitsA = await queryRankedBlocksByTsQuery(client, {
+    query: 'invoice OR gamma',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
+  const orHitsB = await queryRankedBlocksByTsQuery(client, {
+    query: 'invoice OR gamma',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
+  assert.equal(orHitsA.some((row) => row.block_id === String(gammaRow.rows[0].block_id)), true);
+  assert.deepEqual(
+    orHitsA.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`),
+    orHitsB.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`)
+  );
+
+  const dashHitsA = await queryRankedBlocksByTsQuery(client, {
+    query: 'invoice -beta',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
+  const dashHitsB = await queryRankedBlocksByTsQuery(client, {
+    query: 'invoice -beta',
+    limit: 20,
+    scope: { namespaces: ['default'] }
+  });
+  assert.equal(dashHitsA.length >= 1, true);
+  assert.equal(dashHitsA.every((row) => !betaBlockIds.has(row.block_id)), true);
+  assert.deepEqual(
+    dashHitsA.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`),
+    dashHitsB.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`)
+  );
+
+  const indexable = await inspectLexicalQuery(client, { query: 'invoice OR gamma', language: 'english' });
+  assert.equal(indexable.indexable, true);
+  const nonIndexable = await inspectLexicalQuery(client, { query: 'the', language: 'english' });
+  assert.equal(nonIndexable.indexable, false);
+  const snippet = await buildLexicalHeadline(client, {
+    query: '"invoice alpha"',
+    language: 'english',
+    docId: String(blockRows.rows[0].doc_id),
+    version: Number(blockRows.rows[0].ver),
+    blockId: String(invoiceAlphaRow.rows[0].block_id)
+  });
+  assert.equal(typeof snippet, 'string');
+  assert.equal(String(snippet).includes('<mark>'), true);
 });
 
 test('P0 malformed JSON on POST /runs returns 400 invalid_json', async (t) => {

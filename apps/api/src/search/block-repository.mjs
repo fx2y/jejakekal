@@ -220,7 +220,21 @@ async function syncRetrievalProjection(client, params) {
     pageScoped
       ? `INSERT INTO doc_block_fts (block_pk, vec)
          SELECT d.id,
-                to_tsvector($4::regconfig, coalesce(d.text, ''))
+                setweight(
+                  to_tsvector(
+                    $4::regconfig,
+                    coalesce(d.data->>'title', d.data->>'header', d.data->>'heading', '')
+                  ),
+                  'A'
+                )
+                || setweight(
+                  to_tsvector(
+                    $4::regconfig,
+                    coalesce(d.data->>'subtitle', d.data->>'section', '')
+                  ),
+                  'B'
+                )
+                || setweight(to_tsvector($4::regconfig, coalesce(d.text, '')), 'D')
          FROM doc_block d
          WHERE d.doc_id = $1
            AND d.ver = $2
@@ -230,7 +244,21 @@ async function syncRetrievalProjection(client, params) {
              updated_at = NOW()`
       : `INSERT INTO doc_block_fts (block_pk, vec)
          SELECT d.id,
-                to_tsvector($3::regconfig, coalesce(d.text, ''))
+                setweight(
+                  to_tsvector(
+                    $3::regconfig,
+                    coalesce(d.data->>'title', d.data->>'header', d.data->>'heading', '')
+                  ),
+                  'A'
+                )
+                || setweight(
+                  to_tsvector(
+                    $3::regconfig,
+                    coalesce(d.data->>'subtitle', d.data->>'section', '')
+                  ),
+                  'B'
+                )
+                || setweight(to_tsvector($3::regconfig, coalesce(d.text, '')), 'D')
          FROM doc_block d
          WHERE d.doc_id = $1
            AND d.ver = $2
@@ -413,8 +441,63 @@ export async function populateBlockTsv(client, params) {
 
 /**
  * @param {import('pg').Client} client
+ * @param {{query:string, language:string}} params
+ */
+export async function inspectLexicalQuery(client, params) {
+  const query = String(params.query ?? '').trim();
+  if (!query) {
+    return {
+      language: resolveFtsLanguage(params.language),
+      query: '',
+      indexable_query: '',
+      indexable: false
+    };
+  }
+  const language = resolveFtsLanguage(params.language);
+  const result = await client.query(
+    `SELECT querytree(websearch_to_tsquery($1::regconfig, $2)) AS idx_q`,
+    [language, query]
+  );
+  const indexableQuery = String(result.rows[0]?.idx_q ?? '');
+  return {
+    language,
+    query,
+    indexable_query: indexableQuery,
+    indexable: indexableQuery.length > 0
+  };
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{query:string, language:string, docId:string, version:number, blockId:string}} params
+ */
+export async function buildLexicalHeadline(client, params) {
+  const query = String(params.query ?? '').trim();
+  if (!query) return null;
+  const language = resolveFtsLanguage(params.language);
+  const result = await client.query(
+    `SELECT ts_headline(
+              $1::regconfig,
+              coalesce(b.text, ''),
+              websearch_to_tsquery($1::regconfig, $2),
+              'StartSel=<mark>,StopSel=</mark>,MaxFragments=2,MinWords=4,MaxWords=18,FragmentDelimiter=" ... "'
+            ) AS snippet
+     FROM doc_block b
+     WHERE b.doc_id = $3
+       AND b.ver = $4
+       AND b.block_id = $5
+     LIMIT 1`,
+    [language, query, params.docId, params.version, params.blockId]
+  );
+  if (result.rows.length !== 1) return null;
+  const snippet = result.rows[0]?.snippet;
+  return typeof snippet === 'string' && snippet.length > 0 ? snippet : null;
+}
+
+/**
+ * @param {import('pg').Client} client
  * SQL adapter only: lexical lane candidate query against the legacy block ledger.
- * @param {{query:string, language:string, limit:number}} params
+ * @param {{query:string, language:string, limit:number, scope:{namespaces:string[]}}} params
  */
 export async function queryLexicalLaneRows(client, params) {
   const query = String(params.query ?? '').trim();
@@ -422,14 +505,34 @@ export async function queryLexicalLaneRows(client, params) {
     return [];
   }
   const language = resolveFtsLanguage(params.language);
+  const namespaces = Array.isArray(params.scope?.namespaces)
+    ? [...new Set(params.scope.namespaces.map((entry) => String(entry ?? '').trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b)
+      )
+    : [];
+  if (namespaces.length < 1) {
+    return [];
+  }
+  const diagnostics = await inspectLexicalQuery(client, { query, language });
+  if (!diagnostics.indexable) {
+    return [];
+  }
   const limit = Math.max(1, Math.min(200, Math.trunc(Number(params.limit ?? 50))));
   const result = await client.query(
-    `SELECT doc_id, ver, block_id, ts_rank(tsv, q) AS rank
-     FROM block, to_tsquery($1::regconfig, $2) AS q
-     WHERE tsv @@ q
-     ORDER BY rank DESC, doc_id ASC, ver ASC, block_id ASC
-     LIMIT $3`,
-    [language, query, limit]
+    `WITH q AS (
+       SELECT websearch_to_tsquery($1::regconfig, $2) AS tsq
+     )
+     SELECT b.doc_id,
+            b.ver,
+            b.block_id,
+            ts_rank_cd(f.vec, q.tsq) AS rank
+     FROM q
+     JOIN doc_block b ON b.ns = ANY($3::text[])
+     JOIN doc_block_fts f ON f.block_pk = b.id
+     WHERE f.vec @@ q.tsq
+     ORDER BY rank DESC, b.id ASC
+     LIMIT $4`,
+    [language, query, namespaces, limit]
   );
   return result.rows.map((row) => ({
     doc_id: String(row.doc_id),

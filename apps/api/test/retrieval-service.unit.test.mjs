@@ -51,3 +51,23 @@ test('retrieval service: lexical lane output is deterministic by rank then id', 
     ['doc-b:1:b9', 'doc-a:1:b1', 'doc-a:1:b2']
   );
 });
+
+test('retrieval service: lexical plan forwards canonical scope to repository adapter', async () => {
+  /** @type {Array<any>} */
+  const calls = [];
+  const service = createRetrievalService({
+    queryLexicalLaneRows: async (_client, plan) => {
+      calls.push(plan);
+      return [{ doc_id: 'doc-a', ver: 1, block_id: 'b1', rank: 1 }];
+    }
+  });
+  await service.queryRankedBlocksByTsQuery(
+    /** @type {import('pg').Client} */ ({}),
+    {
+      query: 'invoice',
+      scope: { namespaces: ['default'] }
+    }
+  );
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].scope, { namespaces: ['default'] });
+});
