@@ -1,0 +1,9 @@
+flowchart LR
+  C1[/runs* freeze/] --- C2[/artifacts* freeze/]
+  C1 --- C3[/healthz/]
+  U1[#conversation-plane] --- U2[#execution-plane]
+  U2 --- U3[#artifact-plane]
+  F1[text lane step IDs 0..8 frozen] --- F2[artifact vocab raw|docir|chunk-index|memo]
+  F2 --- F3[run projection keys frozen]
+  O1[OCR additive steps only] --- O2[sidecar triad always present]
+  O2 --- O3[vLLM-only engine surface]

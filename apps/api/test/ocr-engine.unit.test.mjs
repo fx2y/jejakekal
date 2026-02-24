@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { normalizeOcrPageIn, normalizeOcrPageOut } from '../src/ocr/contract.mjs';
-import { runOcrEngineSeam } from '../src/ocr/engine-seam.mjs';
+import { OcrEndpointUnreachableError, runOcrEngineSeam } from '../src/ocr/engine-seam.mjs';
 import { closeServer, listenLocal } from '../src/http.mjs';
 
 test('ocr contract: normalize input/output fail closed and preserve raw', () => {
@@ -132,5 +132,23 @@ test('ocr engine seam: malformed OCR page rows fail closed', async () => {
     {
       message: 'invalid_ocr_doc_id'
     }
+  );
+});
+
+test('ocr engine seam: unreachable OCR endpoint returns stable sentinel error', async () => {
+  await assert.rejects(
+    () =>
+      runOcrEngineSeam({
+        pages: [{ doc_id: 'doc-1', ver: 1, page_idx: 0, png_uri: 's3://mem/run/wf/p0.png' }],
+        ocrPolicy: {
+          enabled: true,
+          engine: 'vllm',
+          model: 'zai-org/GLM-OCR',
+          baseUrl: 'http://127.0.0.1:65530',
+          timeoutMs: 500,
+          maxPages: 10
+        }
+      }),
+    (error) => error instanceof OcrEndpointUnreachableError && error.message === 'ocr_endpoint_unreachable'
   );
 });

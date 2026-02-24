@@ -43,7 +43,7 @@ import {
   upsertOcrPage
 } from './ocr/repository.mjs';
 import { runOcrRenderSeam } from './ocr/render-seam.mjs';
-import { runOcrEngineSeam } from './ocr/engine-seam.mjs';
+import { OcrEndpointUnreachableError, runOcrEngineSeam } from './ocr/engine-seam.mjs';
 import { runOcrMergeSeam } from './ocr/merge-seam.mjs';
 
 let workflowsRegistered = false;
@@ -935,62 +935,70 @@ async function persistOcrPagesStep(input) {
       gateRev: input.gateRev,
       pngSha256: page.png_sha
     });
-    const effect = await runIdempotentExternalEffect(effectKey, async () => {
-      const out = await runOcrEngineSeam({
-        pages: [
-          {
-            doc_id: input.docId,
-            ver: input.version,
+    let effect;
+    try {
+      effect = await runIdempotentExternalEffect(effectKey, async () => {
+        const out = await runOcrEngineSeam({
+          pages: [
+            {
+              doc_id: input.docId,
+              ver: input.version,
+              page_idx: page.page_idx,
+              png_uri: page.png_uri,
+              prompt: OCR_PROMPT
+            }
+          ],
+          ocrPolicy: input.ocrPolicy
+        });
+        const first = out.patches[0];
+        if (!first) {
+          throw new Error('ocr_patch_missing');
+        }
+        const rawPayload = Buffer.from(JSON.stringify(first.raw), 'utf8');
+        const rawSha = sha256(rawPayload);
+        const rawKey = buildRunObjectKey({
+          runId: input.workflowId,
+          relativePath: `ocr/raw/p${page.page_idx}/${rawSha}.json`
+        });
+        const blob = await store.putObjectChecked({
+          key: rawKey,
+          payload: rawPayload,
+          contentType: 'application/json'
+        });
+        const rawVerify = await store.getObjectBytes({ key: rawKey });
+        if (sha256(rawVerify) !== rawSha) {
+          throw new Error('ocr_raw_blob_checksum_mismatch');
+        }
+        const patch = {
+          text_md: String(first.text_md ?? ''),
+          tables: Array.isArray(first.tables) ? first.tables : [],
+          confidence: first.confidence == null ? null : Number(first.confidence),
+          engine_meta:
+            first.engine_meta && typeof first.engine_meta === 'object' && !Array.isArray(first.engine_meta)
+              ? first.engine_meta
+              : {}
+        };
+        const patchSha = sha256(
+          JSON.stringify({
             page_idx: page.page_idx,
-            png_uri: page.png_uri,
-            prompt: OCR_PROMPT
-          }
-        ],
-        ocrPolicy: input.ocrPolicy
-      });
-      const first = out.patches[0];
-      if (!first) {
-        throw new Error('ocr_patch_missing');
-      }
-      const rawPayload = Buffer.from(JSON.stringify(first.raw), 'utf8');
-      const rawSha = sha256(rawPayload);
-      const rawKey = buildRunObjectKey({
-        runId: input.workflowId,
-        relativePath: `ocr/raw/p${page.page_idx}/${rawSha}.json`
-      });
-      const blob = await store.putObjectChecked({
-        key: rawKey,
-        payload: rawPayload,
-        contentType: 'application/json'
-      });
-      const rawVerify = await store.getObjectBytes({ key: rawKey });
-      if (sha256(rawVerify) !== rawSha) {
-        throw new Error('ocr_raw_blob_checksum_mismatch');
-      }
-      const patch = {
-        text_md: String(first.text_md ?? ''),
-        tables: Array.isArray(first.tables) ? first.tables : [],
-        confidence: first.confidence == null ? null : Number(first.confidence),
-        engine_meta:
-          first.engine_meta && typeof first.engine_meta === 'object' && !Array.isArray(first.engine_meta)
-            ? first.engine_meta
-            : {}
-      };
-      const patchSha = sha256(
-        JSON.stringify({
+            patch,
+            raw_sha: rawSha
+          })
+        );
+        return {
           page_idx: page.page_idx,
-          patch,
-          raw_sha: rawSha
-        })
-      );
-      return {
-        page_idx: page.page_idx,
-        raw_uri: blob.uri,
-        raw_sha: rawSha,
-        patch_sha: patchSha,
-        patch
-      };
-    });
+          raw_uri: blob.uri,
+          raw_sha: rawSha,
+          patch_sha: patchSha,
+          patch
+        };
+      });
+    } catch (error) {
+      if (error instanceof OcrEndpointUnreachableError) {
+        throw new Error('ocr_endpoint_unreachable');
+      }
+      throw error;
+    }
     if (shouldFailAfterOcrEffectOnce(input.workflowId, page.page_idx)) {
       throw new Error('failpoint_after_ocr_effect');
     }

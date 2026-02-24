@@ -3,6 +3,13 @@ import { normalizeOcrPageIn, normalizeOcrPageOut } from './contract.mjs';
 const OCR_PROMPT = 'Text Recognition:';
 const OCR_RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
+export class OcrEndpointUnreachableError extends Error {
+  constructor() {
+    super('ocr_endpoint_unreachable');
+    this.name = 'OcrEndpointUnreachableError';
+  }
+}
+
 /**
  * @param {number} ms
  */
@@ -22,10 +29,22 @@ function isAbortTimeoutError(value) {
  */
 function isTransientFetchError(value) {
   if (!value || typeof value !== 'object') return false;
-  const err = /** @type {{name?:unknown,code?:unknown}} */ (value);
+  const err = /** @type {{name?:unknown,code?:unknown,cause?:unknown,message?:unknown}} */ (value);
   if (typeof err.name === 'string' && err.name === 'AbortError') return true;
   if (isAbortTimeoutError(value)) return true;
-  const code = typeof err.code === 'string' ? err.code : '';
+  const directCode = typeof err.code === 'string' ? err.code : '';
+  const causeCode =
+    err.cause && typeof err.cause === 'object' && typeof /** @type {{code?:unknown}} */ (err.cause).code === 'string'
+      ? /** @type {{code:string}} */ (err.cause).code
+      : '';
+  const code = directCode || causeCode;
+  if (
+    typeof err.message === 'string' &&
+    err.message.includes('fetch failed') &&
+    code === 'ECONNREFUSED'
+  ) {
+    return true;
+  }
   return [
     'ECONNRESET',
     'ETIMEDOUT',
@@ -154,11 +173,17 @@ export async function callOcrVllm(params) {
       const e = /** @type {{code?:unknown,message?:unknown}} */ (error);
       const retryable = isTransientFetchError(error) || e.code === 'ocr_http_retryable';
       if (!retryable || attempt >= 3) {
+        if (retryable) {
+          throw new OcrEndpointUnreachableError();
+        }
         throw error;
       }
       lastError = error;
       await sleep(100 * attempt);
     }
+  }
+  if (lastError && (isTransientFetchError(lastError) || /** @type {{code?:unknown}} */ (lastError).code === 'ocr_http_retryable')) {
+    throw new OcrEndpointUnreachableError();
   }
   throw lastError ?? new Error('ocr_http_failed');
 }

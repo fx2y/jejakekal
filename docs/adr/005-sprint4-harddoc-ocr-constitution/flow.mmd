@@ -1,0 +1,25 @@
+flowchart TD
+  A[POST /runs normalize] --> B{PDF signal?}
+  B -- no --> T0[default text lane 0..8 frozen]
+  B -- yes --> H0[hard-doc lane]
+  H0 --> H1[ocr-persist-gate]
+  H1 --> H2{hard_pages>0?}
+  H2 -- no --> T0
+  H2 -- yes --> H3[ocr-render-store-pages]
+  H3 --> H4[ocr-pages]
+  H4 --> H5[ocr-merge-diff]
+  H5 --> T8[artifact-count + terminal]
+
+  subgraph Truth
+    D1[(dbos.workflow_status)]
+    D2[(dbos.operation_outputs)]
+    D3[(ocr_job/ocr_page/ocr_patch/docir_page_*)]
+    D4[(artifact rows)]
+  end
+
+  T0 --> D1
+  H1 --> D3
+  H3 --> D3
+  H4 --> D3
+  H5 --> D3
+  T8 --> D4

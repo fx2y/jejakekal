@@ -9,20 +9,20 @@ paths:
 
 # Task/CI Rules
 
-- `.mise.toml` is command-graph SoT; wrappers/scripts are thin leaves, not alternate orchestrators.
-- Release verdict is `mise run ci` only; GH Actions call only that entrypoint.
-- `verify` stays the fast dev gate; don't hide release-only checks outside `ci`.
-- Gate all first probes with `mise run wait:health -- <url>` (API/UI/Seaweed master/filer/S3).
-- `smoke:ingest` is ops-contract lane (S3 put/head/get + marker sanity + FTS index presence); keep deterministic.
-- Golden/UI/perf/replay/idempotency lanes are release-contract lanes inside `ci`.
-- Task wrappers stay strict/non-interactive (`set -euo pipefail`) and declare incremental `sources/outputs` when expensive.
-- Host deps stay minimal (`mise` + container runtime); DB ops via `mise run psql`.
-- Seaweed port overrides are additive envs (`SEAWEED_*_PORT`); filer override must be paired with `BLOB_FILER_ENDPOINT` across `up|reset|verify|ci`.
-- Local/demo/showcase helpers may skip lanes by default, but must not redefine release verdict or CI parity.
+- `.mise.toml` is command-graph SoT; wrappers/scripts are leaves only.
+- Release verdict is only `mise run ci`; CI pipelines call only this entrypoint.
+- `mise run verify` is the dev gate; no release-only checks hidden outside `ci`.
+- First external probe must be gated via `mise run wait:health -- <url>`.
+- Core contract lanes (`replay`,`idempotency`,`workflow`,`ui:e2e`,`golden:diff`,`bench:check`,`smoke:ingest`) stay inside `ci`.
+- DB-reset integration lanes run sequentially (non-parallel-safe unless isolation model changes).
+- Wrapper scripts are strict/non-interactive (`set -euo pipefail`) with deterministic env handling.
+- Host deps remain minimal (`mise` + container runtime); SQL truth path is `mise run psql`.
+- Filer override is paired+sticky: set both `SEAWEED_FILER_PORT` and `BLOB_FILER_ENDPOINT` across `up|reset|verify|ci|signoff` or set neither.
+- Poppler preflight is shared contract for OCR lanes (workflow/smoke/bench/signoff), not lane-local logic.
 
 # Failure Recipes
 
-- CI/local drift: delete shadow gate logic; rerun `mise run ci`.
-- Task unexpectedly skipped: audit `sources/outputs` globs and hidden env deps.
-- Stack unhealthy: inspect compose JSON via `jq -s`; verify PG mount `/var/lib/postgresql` and Seaweed port collisions.
-- Seaweed S3 `InvalidAccessKeyId|AccessDenied`: bootstrap IAM creds, then rerun reset/proofs.
+- CI/local drift: delete shadow gates; rerun `mise run ci`.
+- Task skipped unexpectedly: audit `sources/outputs` and hidden env dependencies.
+- Stack unhealthy: inspect compose JSON (`jq -s`), verify PG mount `/var/lib/postgresql`, resolve Seaweed port collisions.
+- Seaweed S3 `InvalidAccessKeyId|AccessDenied`: bootstrap IAM creds, then rerun reset + proofs.
