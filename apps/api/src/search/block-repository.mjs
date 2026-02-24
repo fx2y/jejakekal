@@ -1,4 +1,5 @@
 import { resolveFtsLanguage } from '../retrieval/lanes/lexical.mjs';
+import { toPgVectorLiteral } from '../retrieval/embeddings.mjs';
 
 const DEFAULT_NAMESPACE = 'default';
 
@@ -122,6 +123,29 @@ function rowizeTableCells(data, fallbackText) {
 function canonicalPages(pageNumbers) {
   if (!Array.isArray(pageNumbers)) return [];
   return [...new Set(pageNumbers.map((page) => Number(page)).filter((page) => Number.isInteger(page) && page >= 1))].sort((a, b) => a - b);
+}
+
+/**
+ * @param {unknown} value
+ */
+function resolveVectorIndexType(value) {
+  const normalized = String(value ?? 'hnsw').trim().toLowerCase();
+  if (normalized === 'hnsw' || normalized === 'ivf') return normalized;
+  throw new Error('invalid_vector_index_type');
+}
+
+/**
+ * @param {unknown} value
+ * @param {number} fallback
+ * @param {string} code
+ */
+function resolvePositiveInt(value, fallback, code) {
+  if (value == null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(code);
+  const int = Math.trunc(parsed);
+  if (int < 1) throw new Error(code);
+  return int;
 }
 
 /**
@@ -639,6 +663,166 @@ export async function queryTrgmLaneRows(client, params) {
     ver: Number(row.ver),
     block_id: String(row.block_id),
     rank: Number(row.rank)
+  }));
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{docId:string, version:number, pageNumbers?:number[]}} params
+ */
+export async function listEmbeddableDocBlocks(client, params) {
+  const pages = canonicalPages(params.pageNumbers);
+  const pageScoped = pages.length > 0;
+  const result = await client.query(
+    pageScoped
+      ? `SELECT b.block_id, b.block_sha, b.type, b.page, b.text, b.data
+         FROM doc_block b
+         WHERE b.doc_id = $1
+           AND b.ver = $2
+           AND b.page = ANY($3::int[])
+         ORDER BY b.page ASC, b.block_id ASC`
+      : `SELECT b.block_id, b.block_sha, b.type, b.page, b.text, b.data
+         FROM doc_block b
+         WHERE b.doc_id = $1
+           AND b.ver = $2
+         ORDER BY b.page ASC, b.block_id ASC`,
+    pageScoped ? [params.docId, params.version, pages] : [params.docId, params.version]
+  );
+  return result.rows.map((row) => ({
+    block_id: String(row.block_id),
+    block_sha: String(row.block_sha),
+    type: String(row.type),
+    page: Number(row.page),
+    text: typeof row.text === 'string' ? row.text : null,
+    data: asRecord(row.data) ?? {}
+  }));
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{docId:string, version:number, model:string, rows:Array<{block_id:string, emb:number[]}>, pageNumbers?:number[]}} params
+ */
+export async function replaceDocBlockEmbeddings(client, params) {
+  const pages = canonicalPages(params.pageNumbers);
+  const pageScoped = pages.length > 0;
+  const model = String(params.model ?? '').trim();
+  if (!model) throw new Error('invalid_embedding_model');
+  await client.query(
+    pageScoped
+      ? `DELETE FROM doc_block_vec v
+         USING doc_block b
+         WHERE v.block_pk = b.id
+           AND b.doc_id = $1
+           AND b.ver = $2
+           AND b.page = ANY($3::int[])`
+      : `DELETE FROM doc_block_vec v
+         USING doc_block b
+         WHERE v.block_pk = b.id
+           AND b.doc_id = $1
+           AND b.ver = $2`,
+    pageScoped ? [params.docId, params.version, pages] : [params.docId, params.version]
+  );
+  let upserted = 0;
+  for (const row of params.rows) {
+    const result = await client.query(
+      `INSERT INTO doc_block_vec (block_pk, emb, model)
+       SELECT b.id, $4::vector, $5::text
+       FROM doc_block b
+       WHERE b.doc_id = $1
+         AND b.ver = $2
+         AND b.block_id = $3
+       ON CONFLICT (block_pk) DO UPDATE
+       SET emb = EXCLUDED.emb,
+           model = EXCLUDED.model,
+           updated_at = NOW()`,
+      [params.docId, params.version, row.block_id, toPgVectorLiteral(row.emb), model]
+    );
+    upserted += result.rowCount ?? 0;
+  }
+  return { upserted };
+}
+
+/**
+ * @param {import('pg').Client} client
+ * @param {{queryVector:number[], model:string, limit:number, candidateLimit?:number, efSearch?:number, ivfProbes?:number, indexType?:'hnsw'|'ivf', scope:{namespaces:string[], acl?:Record<string, unknown>}}} params
+ */
+export async function queryVectorLaneRows(client, params) {
+  const namespaces = Array.isArray(params.scope?.namespaces)
+    ? [...new Set(params.scope.namespaces.map((entry) => String(entry ?? '').trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b)
+      )
+    : [];
+  if (namespaces.length < 1) return [];
+  const acl =
+    params.scope?.acl && typeof params.scope.acl === 'object' && !Array.isArray(params.scope.acl) ? params.scope.acl : {};
+  const model = String(params.model ?? '').trim();
+  if (!model) throw new Error('invalid_embedding_model');
+  const limit = Math.max(1, Math.min(200, Math.trunc(Number(params.limit ?? 50))));
+  const candidateLimit = Math.max(limit, Math.min(400, Math.trunc(Number(params.candidateLimit ?? Math.max(limit * 4, 50)))));
+  const indexType = resolveVectorIndexType(params.indexType);
+  const efSearch = resolvePositiveInt(params.efSearch, 80, 'invalid_vector_ef_search');
+  const ivfProbes = resolvePositiveInt(params.ivfProbes, 10, 'invalid_vector_ivf_probes');
+  const vectorLiteral = toPgVectorLiteral(params.queryVector);
+  const result = await client.query(
+    `WITH cfg_hnsw AS (
+       SELECT CASE
+         WHEN $1::text = 'hnsw' THEN set_config('hnsw.ef_search', $2::text, true)
+         ELSE NULL
+       END
+     ),
+     cfg_ivf AS (
+       SELECT CASE
+         WHEN $1::text = 'ivf' THEN set_config('ivfflat.probes', $3::text, true)
+         ELSE NULL
+       END
+     ),
+     q AS (
+       SELECT $4::vector AS emb, $5::jsonb AS acl
+     ),
+     ann AS (
+       SELECT b.id AS block_pk,
+              b.doc_id,
+              b.ver,
+              b.block_id
+       FROM cfg_hnsw
+       CROSS JOIN cfg_ivf
+       JOIN q ON TRUE
+       JOIN doc_block b ON b.ns = ANY($6::text[])
+       JOIN doc_block_vec v ON v.block_pk = b.id
+       WHERE b.acl @> q.acl
+         AND v.model = $7::text
+         AND v.emb IS NOT NULL
+       ORDER BY v.emb <=> q.emb ASC, b.id ASC
+       LIMIT $8
+     )
+     SELECT ann.doc_id,
+            ann.ver,
+            ann.block_id,
+            1 - (v.emb <=> q.emb) AS rank,
+            (v.emb <=> q.emb) AS distance
+     FROM ann
+     JOIN doc_block_vec v ON v.block_pk = ann.block_pk
+     JOIN q ON TRUE
+     ORDER BY distance ASC, ann.block_pk ASC
+     LIMIT $9`,
+    [
+      indexType,
+      String(efSearch),
+      String(ivfProbes),
+      vectorLiteral,
+      JSON.stringify(acl),
+      namespaces,
+      model,
+      candidateLimit,
+      limit
+    ]
+  );
+  return result.rows.map((row) => ({
+    doc_id: String(row.doc_id),
+    ver: Number(row.ver),
+    block_id: String(row.block_id),
+    rank: Number(row.rank),
+    distance: Number(row.distance)
   }));
 }
 

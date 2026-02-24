@@ -95,3 +95,15 @@ export function buildOcrPageEffectKey(params) {
   const digest = assertSha256(params.pngSha256);
   return `${workflowId}|ocr-page|${docId}|${version}|p${pageIdx}|${model}|${gateRev}|${digest}`;
 }
+
+/**
+ * @param {{workflowId:string,docId:string,version:number,blockSha256:string,model:string}} params
+ */
+export function buildEmbeddingBlockEffectKey(params) {
+  const workflowId = assertValidRunId(params.workflowId, 'run_id');
+  const docId = assertNonEmptyString(params.docId, 'doc_id');
+  const version = assertPositiveInteger(params.version, 'version');
+  const model = assertNonEmptyString(params.model, 'embedding_model');
+  const digest = assertSha256(params.blockSha256);
+  return `${workflowId}|embed-block|${docId}|${version}|${model}|${digest}`;
+}

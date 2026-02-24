@@ -19,7 +19,7 @@ import { queryRankedBlocksByTsQuery } from '../src/retrieval/service.mjs';
 import { closeServer, listenLocal } from '../src/http.mjs';
 import { exportRunBundle } from '../src/export-run.mjs';
 import { deriveHardDocWorkflowId } from '../src/runs-service.mjs';
-import { buildLexicalHeadline, inspectLexicalQuery } from '../src/search/block-repository.mjs';
+import { buildLexicalHeadline, inspectLexicalQuery, queryVectorLaneRows } from '../src/search/block-repository.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -1115,7 +1115,8 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
        to_regclass('public.doc_block_title_trgm_gin') AS doc_block_title_trgm_idx,
        to_regclass('public.doc_block_entity_trgm_gin') AS doc_block_entity_trgm_idx,
        to_regclass('public.doc_block_key_trgm_gin') AS doc_block_key_trgm_idx,
-       to_regclass('public.table_cell_key_trgm_gin') AS table_cell_key_trgm_idx`
+       to_regclass('public.table_cell_key_trgm_gin') AS table_cell_key_trgm_idx,
+       to_regclass('public.doc_block_vec_hnsw') AS doc_block_vec_hnsw_idx`
   );
   assert.equal(indexRes.rows[0].block_idx, 'block_tsv_gin');
   assert.equal(indexRes.rows[0].doc_block_idx, 'doc_block_fts_gin');
@@ -1124,6 +1125,7 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
   assert.equal(indexRes.rows[0].doc_block_entity_trgm_idx, 'doc_block_entity_trgm_gin');
   assert.equal(indexRes.rows[0].doc_block_key_trgm_idx, 'doc_block_key_trgm_gin');
   assert.equal(indexRes.rows[0].table_cell_key_trgm_idx, 'table_cell_key_trgm_gin');
+  assert.equal(indexRes.rows[0].doc_block_vec_hnsw_idx, 'doc_block_vec_hnsw');
 
   const blockRows = await client.query(
     `SELECT doc_id, ver, block_id, block_sha, tsv
@@ -1149,6 +1151,18 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
     docBlockRows.rows.every((row) => typeof row.block_sha === 'string' && row.block_sha.length === 64 && row.vec != null),
     true
   );
+  const docBlockVecRows = await client.query(
+    `SELECT b.block_id, v.model, v.emb
+     FROM doc_block b
+     JOIN doc_block_vec v ON v.block_pk = b.id
+     WHERE b.doc_id = $1
+       AND b.ver = $2
+     ORDER BY b.block_id ASC`,
+    [blockRows.rows[0].doc_id, blockRows.rows[0].ver]
+  );
+  assert.equal(docBlockVecRows.rows.length >= 1, true);
+  assert.equal(docBlockVecRows.rows.every((row) => typeof row.model === 'string' && row.model.length >= 1), true);
+  assert.equal(docBlockVecRows.rows.every((row) => row.emb != null), true);
 
   const hits = await queryRankedBlocksByTsQuery(client, {
     query: 'invoice',
@@ -1280,6 +1294,37 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
     trgmHitsB.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`)
   );
 
+  const vecHitsA = await queryRankedBlocksByTsQuery(client, {
+    query: 'invoice alpha',
+    limit: 20,
+    enableVector: true,
+    vector: { efSearch: 64, candidateLimit: 20 },
+    scope: { namespaces: ['default'] }
+  });
+  const vecHitsB = await queryRankedBlocksByTsQuery(client, {
+    query: 'invoice alpha',
+    limit: 20,
+    enableVector: true,
+    vector: { efSearch: 64, candidateLimit: 20 },
+    scope: { namespaces: ['default'] }
+  });
+  assert.equal(vecHitsA.length >= 1, true);
+  assert.deepEqual(
+    vecHitsA.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`),
+    vecHitsB.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`)
+  );
+
+  const vecRows = await queryVectorLaneRows(client, {
+    queryVector: new Array(1536).fill(0).map((_, idx) => (idx === 0 ? 1 : 0)),
+    model: String(docBlockVecRows.rows[0].model),
+    limit: 5,
+    candidateLimit: 5,
+    efSearch: 32,
+    indexType: 'hnsw',
+    scope: { namespaces: ['default'] }
+  });
+  assert.equal(Array.isArray(vecRows), true);
+
   const movedBlock = trgmHitsA[0];
   await client.query(
     `UPDATE doc_block
@@ -1330,6 +1375,26 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
       hasIndexScanNode,
     true
   );
+
+  await client.query('SET enable_seqscan = off');
+  const hnswExplain = await client.query(
+    `EXPLAIN (FORMAT JSON)
+     SELECT v.block_pk
+     FROM doc_block_vec v
+     JOIN doc_block b ON b.id = v.block_pk
+     WHERE b.ns = ANY($2::text[])
+       AND v.model = $3::text
+     ORDER BY v.emb <=> $1::vector ASC, b.id ASC
+     LIMIT 10`,
+    ['[1,0,0' + ',0'.repeat(1533) + ']', ['default'], String(docBlockVecRows.rows[0].model)]
+  );
+  await client.query('RESET enable_seqscan');
+  const hnswExplainText = JSON.stringify(hnswExplain.rows[0]?.['QUERY PLAN']?.[0]);
+  const hasVecIndexScan =
+    hnswExplainText.includes('doc_block_vec_hnsw') ||
+    hnswExplainText.includes('"Node Type":"Index Scan"') ||
+    hnswExplainText.includes('"Node Type":"Index Only Scan"');
+  assert.equal(hasVecIndexScan, true);
 });
 
 test('P0 malformed JSON on POST /runs returns 400 invalid_json', async (t) => {

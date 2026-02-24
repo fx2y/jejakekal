@@ -19,13 +19,20 @@ import { MARKER_CONFIG_PLACEHOLDER_SHA, reserveDocVersion } from './ingest/doc-r
 import { buildExecMemoMarkdown } from './ingest/exec-memo.mjs';
 import {
   deleteTextTableBlocksByPages,
+  listEmbeddableDocBlocks,
   listBlocksByDocVersion,
   populateBlockTsv,
   populateBlockTsvForPages,
+  replaceDocBlockEmbeddings,
   upsertBlockLedger
 } from './search/block-repository.mjs';
 import { callIdempotentEffect } from './effects.mjs';
-import { buildIngestEffectKey, buildOcrPageEffectKey, buildOcrPageRenderEffectKey } from './ingest/effect-key.mjs';
+import {
+  buildEmbeddingBlockEffectKey,
+  buildIngestEffectKey,
+  buildOcrPageEffectKey,
+  buildOcrPageRenderEffectKey
+} from './ingest/effect-key.mjs';
 import { defaultBundlesRootPath } from './bundles-root.mjs';
 import { resolveOcrPolicy } from './ocr/config.mjs';
 import { runDefaultTextLane } from './workflows/default-text-lane.mjs';
@@ -45,6 +52,7 @@ import {
 import { runOcrRenderSeam } from './ocr/render-seam.mjs';
 import { OcrEndpointUnreachableError, runOcrEngineSeam } from './ocr/engine-seam.mjs';
 import { runOcrMergeSeam } from './ocr/merge-seam.mjs';
+import { embedTextDeterministic, resolveEmbeddingModel } from './retrieval/embeddings.mjs';
 
 let workflowsRegistered = false;
 /** @type {((input: { value: string, sleepMs?: number, bundlesRoot: string, useLlm?: boolean, pauseAfterS4Ms?: number, ocrPolicy?: Record<string, unknown> }) => Promise<unknown>) | undefined} */
@@ -57,6 +65,7 @@ const flakyAttemptByWorkflow = new Map();
 let s3BlobStore;
 const storeRawFailpointByWorkflow = new Set();
 const ocrEffectFailpointByPage = new Set();
+const embedEffectFailpointByWorkflow = new Set();
 const OCR_PROMPT = 'Text Recognition:';
 
 function getS3BlobStore() {
@@ -115,6 +124,104 @@ function shouldFailAfterOcrEffectOnce(workflowId, pageIdx) {
   }
   ocrEffectFailpointByPage.add(key);
   return true;
+}
+
+/**
+ * @param {string} workflowId
+ */
+function shouldFailAfterEmbedEffectOnce(workflowId) {
+  if (process.env.JEJAKEKAL_FAIL_AFTER_EMBED_EFFECT_ONCE !== '1') {
+    return false;
+  }
+  if (embedEffectFailpointByWorkflow.has(workflowId)) {
+    return false;
+  }
+  embedEffectFailpointByWorkflow.add(workflowId);
+  return true;
+}
+
+/**
+ * @param {{text:string|null, data:Record<string, unknown>, type:string}} block
+ */
+function buildBlockEmbeddingText(block) {
+  const title = [block.data.title, block.data.header, block.data.heading].find((value) => typeof value === 'string') ?? '';
+  const subtitle = [block.data.subtitle, block.data.section].find((value) => typeof value === 'string') ?? '';
+  const key = [block.data.key, block.data.keyword].find((value) => typeof value === 'string') ?? '';
+  return [title, subtitle, key, block.text ?? '']
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
+ * @param {{block_id:string, block_sha:string, text:string|null, data:Record<string, unknown>, type:string}} _row
+ */
+function isEmbeddableBlockRow(_row) {
+  return true;
+}
+
+/**
+ * @param {{workflowId:string, docId:string, version:number, blocks:Array<{block_id:string, block_sha:string, text:string|null, data:Record<string, unknown>, type:string}>}} params
+ */
+async function computeBlockEmbeddingsFromRows(params) {
+  const model = resolveEmbeddingModel(process.env.RETR_EMBED_MODEL);
+  /** @type {Array<{block_id:string, emb:number[], effect_replayed:boolean}>} */
+  const embeddings = [];
+  const rows = [...params.blocks]
+    .filter((row) => isEmbeddableBlockRow(row))
+    .sort((a, b) => a.block_id.localeCompare(b.block_id));
+  for (const row of rows) {
+    const sourceText = buildBlockEmbeddingText(row);
+    if (!sourceText) {
+      continue;
+    }
+    const effectKey = buildEmbeddingBlockEffectKey({
+      workflowId: params.workflowId,
+      docId: params.docId,
+      version: params.version,
+      blockSha256: row.block_sha,
+      model
+    });
+    const effect = await runIdempotentExternalEffect(effectKey, async () => ({
+      model,
+      block_id: row.block_id,
+      emb: embedTextDeterministic(sourceText)
+    }));
+    const response =
+      effect.response && typeof effect.response === 'object' && !Array.isArray(effect.response)
+        ? /** @type {{emb?: number[]}} */ (effect.response)
+        : {};
+    if (!Array.isArray(response.emb)) {
+      throw new Error('embed_effect_response_invalid');
+    }
+    embeddings.push({
+      block_id: row.block_id,
+      emb: response.emb.map((n) => Number(n)),
+      effect_replayed: effect.replayed
+    });
+  }
+  return {
+    model,
+    rows: embeddings
+  };
+}
+
+/**
+ * @param {{workflowId:string, docId:string, version:number}} params
+ */
+async function computeDocBlockEmbeddings(params) {
+  const rows = await withAppClient((client) =>
+    listEmbeddableDocBlocks(client, {
+      docId: params.docId,
+      version: params.version
+    })
+  );
+  return computeBlockEmbeddingsFromRows({
+    workflowId: params.workflowId,
+    docId: params.docId,
+    version: params.version,
+    blocks: rows
+  });
 }
 
 /**
@@ -425,21 +532,59 @@ async function normalizeDocirStep(input) {
  * @param {{workflowId:string,docId:string,version:number,language?:string}} input
  */
 async function indexFtsStep(input) {
-  return withAppClient(async (client) => {
+  const indexed = await withAppClient(async (client) => {
     await client.query('BEGIN');
     try {
-      const indexed = await populateBlockTsv(client, {
+      const result = await populateBlockTsv(client, {
         docId: input.docId,
         version: input.version,
         language: input.language
       });
       await client.query('COMMIT');
-      return indexed;
+      return result;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
     }
   });
+
+  const embedding = await computeDocBlockEmbeddings({
+    workflowId: input.workflowId,
+    docId: input.docId,
+    version: input.version
+  });
+
+  if (shouldFailAfterEmbedEffectOnce(input.workflowId)) {
+    throw new Error('fail_after_embed_effect_once');
+  }
+
+  const persistedEmbedding = await withAppClient(async (client) => {
+    await client.query('BEGIN');
+    try {
+      const result = await replaceDocBlockEmbeddings(client, {
+        docId: input.docId,
+        version: input.version,
+        model: embedding.model,
+        rows: embedding.rows.map((row) => ({ block_id: row.block_id, emb: row.emb }))
+      });
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  });
+
+  return {
+    ...indexed,
+    embedding: {
+      model: embedding.model,
+      blocks: embedding.rows.length,
+      stored: persistedEmbedding.upserted,
+      effect_replayed: embedding.rows.some((row) => row.effect_replayed),
+      effect_replayed_blocks: embedding.rows.filter((row) => row.effect_replayed).length
+    }
+  };
 }
 
 /**
@@ -1118,6 +1263,15 @@ async function mergeOcrIntoDocirStep(input) {
       return { merged_pages: [], changed_blocks: 0, diff_sha: null };
     }
     const pageNumbers = mergedPages.map((page) => page + 1);
+    const replacementBlocks = merge.replacement_blocks
+      .filter((row) => Number.isInteger(row.page) && row.page >= 1)
+      .sort((a, b) => a.page - b.page || a.block_id.localeCompare(b.block_id));
+    const pageEmbeddings = await computeBlockEmbeddingsFromRows({
+      workflowId: input.workflowId,
+      docId: input.docId,
+      version: input.version,
+      blocks: replacementBlocks
+    });
     await client.query('BEGIN');
     try {
       await deleteTextTableBlocksByPages(client, {
@@ -1125,9 +1279,6 @@ async function mergeOcrIntoDocirStep(input) {
         version: input.version,
         pageNumbers
       });
-      const replacementBlocks = merge.replacement_blocks
-        .filter((row) => Number.isInteger(row.page) && row.page >= 1)
-        .sort((a, b) => a.page - b.page || a.block_id.localeCompare(b.block_id));
       if (replacementBlocks.length > 0) {
         await upsertBlockLedger(client, {
           docId: input.docId,
@@ -1179,6 +1330,13 @@ async function mergeOcrIntoDocirStep(input) {
         version: input.version,
         pageNumbers
       });
+      await replaceDocBlockEmbeddings(client, {
+        docId: input.docId,
+        version: input.version,
+        pageNumbers,
+        model: pageEmbeddings.model,
+        rows: pageEmbeddings.rows.map((row) => ({ block_id: row.block_id, emb: row.emb }))
+      });
       await client.query('COMMIT');
       return {
         merged_pages: mergedPages,
@@ -1186,7 +1344,12 @@ async function mergeOcrIntoDocirStep(input) {
           (sum, row) => sum + Math.max(0, Math.trunc(Number(row.changed_blocks ?? 0))),
           0
         ),
-        diff_sha: diffSha
+        diff_sha: diffSha,
+        embedding: {
+          model: pageEmbeddings.model,
+          blocks: pageEmbeddings.rows.length,
+          effect_replayed: pageEmbeddings.rows.some((row) => row.effect_replayed)
+        }
       };
     } catch (error) {
       await client.query('ROLLBACK');

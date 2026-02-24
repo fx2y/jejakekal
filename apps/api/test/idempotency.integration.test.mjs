@@ -198,3 +198,55 @@ test('OCR retry after post-effect failure replays per-page OCR side effects', as
   );
   assert.equal(countRes.rows[0].c, pages.length);
 });
+
+test('index-fts retry after post-embed-effect failure replays embedding side effects without duplicates', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-24T00:00:00.000Z'), random: 0.25 });
+  const prevFailpoint = process.env.JEJAKEKAL_FAIL_AFTER_EMBED_EFFECT_ONCE;
+  process.env.JEJAKEKAL_FAIL_AFTER_EMBED_EFFECT_ONCE = '1';
+  t.after(() => {
+    unfreeze();
+    if (prevFailpoint == null) {
+      delete process.env.JEJAKEKAL_FAIL_AFTER_EMBED_EFFECT_ONCE;
+    } else {
+      process.env.JEJAKEKAL_FAIL_AFTER_EMBED_EFFECT_ONCE = prevFailpoint;
+    }
+  });
+  t.after(async () => {
+    await shutdownDbosRuntime();
+  });
+
+  const workflowId = `idem-embed-${process.pid}-${Date.now()}`;
+  await defaultWorkflow({ client, workflowId, value: 'invoice alpha\ninvoice beta\ninvoice gamma' });
+
+  const outputs = await readOperationOutputs(client, workflowId);
+  const indexStep = outputs.find((row) => row.function_name === 'index-fts');
+  assert.ok(indexStep);
+  const indexOutput =
+    indexStep.output && typeof indexStep.output === 'object' && !Array.isArray(indexStep.output)
+      ? /** @type {Record<string, unknown>} */ (indexStep.output)
+      : {};
+  const embedding =
+    indexOutput.embedding && typeof indexOutput.embedding === 'object' && !Array.isArray(indexOutput.embedding)
+      ? /** @type {Record<string, unknown>} */ (indexOutput.embedding)
+      : {};
+  assert.equal(embedding.effect_replayed, true);
+  assert.equal(Number(embedding.effect_replayed_blocks) >= 1, true);
+
+  const effectCount = await client.query(
+    `SELECT COUNT(*)::int AS n, COUNT(DISTINCT effect_key)::int AS distinct_n
+     FROM side_effects
+     WHERE effect_key LIKE $1`,
+    [`${workflowId}|embed-block|%`]
+  );
+  assert.equal(effectCount.rows[0].n >= 1, true);
+  assert.equal(effectCount.rows[0].n, effectCount.rows[0].distinct_n);
+
+  const vecCount = await client.query(
+    `SELECT COUNT(*)::int AS n, COUNT(DISTINCT block_pk)::int AS distinct_n
+     FROM doc_block_vec`
+  );
+  assert.equal(vecCount.rows[0].n >= 1, true);
+  assert.equal(vecCount.rows[0].n, vecCount.rows[0].distinct_n);
+});
