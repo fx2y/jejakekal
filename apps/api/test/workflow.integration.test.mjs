@@ -18,6 +18,7 @@ import { createS3BlobStore, defaultS3BlobStoreConfig } from '../src/blob/s3-stor
 import { queryRankedBlocksByTsQuery } from '../src/search/block-repository.mjs';
 import { closeServer, listenLocal } from '../src/http.mjs';
 import { exportRunBundle } from '../src/export-run.mjs';
+import { deriveHardDocWorkflowId } from '../src/runs-service.mjs';
 
 /**
  * @param {{port:number, method:string, path:string, body?:string}} req
@@ -622,6 +623,54 @@ test('C2 payload guards: no default source fallback and invalid command typed 40
   });
   assert.equal(badSleepZero.status, 400);
   assert.deepEqual(await badSleepZero.json(), { error: 'invalid_run_payload' });
+});
+
+test('C5 hard-doc run-start: additive locator/mime routes to hard-doc workflow with deterministic workflowId', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const ocr = await startMockOcrServer();
+  t.after(async () => {
+    await ocr.close();
+  });
+  const prevOcrBaseUrl = process.env.OCR_BASE_URL;
+  process.env.OCR_BASE_URL = ocr.baseUrl;
+  t.after(() => {
+    if (prevOcrBaseUrl == null) {
+      delete process.env.OCR_BASE_URL;
+      return;
+    }
+    process.env.OCR_BASE_URL = prevOcrBaseUrl;
+  });
+
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const hardDocNonce = `${process.pid}-${Date.now()}`;
+  const payload = {
+    intent: 'doc',
+    args: {
+      source: ['scan', 'small', 'table|x', `nonce:${hardDocNonce}`].join('\n'),
+      locator: `s3://fixtures/hard-doc-${hardDocNonce}.pdf`,
+      mime: 'application/pdf'
+    },
+    sleepMs: 1
+  };
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  assert.equal(started.run_id, deriveHardDocWorkflowId(payload));
+
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+  assert.equal(run.timeline.some((row) => row.function_name === 'ocr-persist-gate'), true);
+  assert.equal(run.timeline.some((row) => row.function_name === 'ocr-pages'), true);
+  assert.equal(run.timeline.some((row) => row.function_name === 'ocr-merge-diff'), true);
 });
 
 test('C2 chat ledger invariant: POST /runs writes cmd,args,run_id only', async (t) => {

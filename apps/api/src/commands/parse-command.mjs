@@ -17,6 +17,14 @@ function requireNonEmptyString(value) {
 /**
  * @param {unknown} value
  */
+function normalizeOptionalString(value) {
+  if (!requireNonEmptyString(value)) return undefined;
+  return String(value).trim();
+}
+
+/**
+ * @param {unknown} value
+ */
 function normalizeArgsObject(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return /** @type {Record<string, unknown>} */ (value);
@@ -30,11 +38,17 @@ function normalizeArgsObject(value) {
   */
 function normalizeIntentArgs(intent, args) {
   if (SOURCE_INTENT_SET.has(intent)) {
-    if (!requireNonEmptyString(args.source)) {
+    const source = normalizeOptionalString(args.source);
+    const locator = normalizeOptionalString(args.locator);
+    const mime = normalizeOptionalString(args.mime)?.toLowerCase();
+    if (!source && !locator) {
       throw badRequest('invalid_run_payload');
     }
-    const source = String(args.source).trim();
-    return { source };
+    return {
+      ...(source ? { source } : {}),
+      ...(locator ? { locator } : {}),
+      ...(mime ? { mime } : {})
+    };
   }
   if (intent === 'run') {
     if (!requireNonEmptyString(args.run_id)) {
@@ -109,7 +123,11 @@ export function parseSlashCommand(raw) {
  */
 export function commandToWorkflowValue(command) {
   if (SOURCE_INTENT_SET.has(command.intent)) {
-    return String(command.args.source);
+    const source = normalizeOptionalString(command.args.source) ?? normalizeOptionalString(command.args.locator);
+    if (!source) {
+      throw badRequest('invalid_run_payload');
+    }
+    return source;
   }
   return JSON.stringify({ intent: command.intent, args: command.args });
 }

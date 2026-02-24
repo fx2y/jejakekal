@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { execFile as execFileCb } from 'node:child_process';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { ensureDbosRuntime, shutdownDbosRuntime } from '../src/dbos-runtime.mjs';
 import { startFlakyRetryWorkflowRun } from '../src/dbos-workflows.mjs';
 import { getRunProjection } from '../src/runs-projections.mjs';
+import { closeServer, listenLocal } from '../src/http.mjs';
 import {
   connectDbOrSkip,
   nextWorkflowId,
@@ -19,6 +21,26 @@ import {
 import { freezeDeterminism } from '../../../packages/core/src/determinism.mjs';
 
 const execFile = promisify(execFileCb);
+
+async function startMockOcrServer() {
+  const server = createServer(async (req, res) => {
+    if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        choices: [{ message: { content: [{ type: 'text', text: 'ocr text' }] } }]
+      })
+    );
+  });
+  const port = await listenLocal(server, 0);
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    close: () => closeServer(server)
+  };
+}
 
 async function postRun(baseUrl, body) {
   const res = await fetch(`${baseUrl}/runs`, {
@@ -360,6 +382,93 @@ test('C4 replay: cancel between S4/S5 then resume without duplicate block rows a
   assert.equal(after.rows[0].n, beforeCount);
   assert.equal(after.rows[0].n, after.rows[0].distinct_n);
   assert.equal(after.rows[0].indexed_n, beforeCount);
+});
+
+test('C5 replay: cancel after OCR step then resume without duplicate per-page OCR effects', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const unfreeze = freezeDeterminism({ now: Date.parse('2026-02-24T00:00:00.000Z'), random: 0.25 });
+  const ocr = await startMockOcrServer();
+  t.after(async () => {
+    unfreeze();
+    await ocr.close();
+  });
+
+  const api = await startApiProcess({
+    env: {
+      OCR_ENABLED: '1',
+      OCR_ENGINE: 'vllm',
+      OCR_MODEL: 'zai-org/GLM-OCR',
+      OCR_BASE_URL: ocr.baseUrl,
+      OCR_TIMEOUT_MS: '5000',
+      OCR_MAX_PAGES: '10',
+      JEJAKEKAL_PAUSE_AFTER_S4_MS: '3000'
+    }
+  });
+  t.after(async () => {
+    await api.stop();
+  });
+  await api.waitForHealth();
+
+  const started = await postRun(api.baseUrl, {
+    intent: 'doc',
+    args: {
+      source: ['scan', 'small', 'table|x', `nonce:${process.pid}-${Date.now()}`].join('\n'),
+      locator: `s3://fixtures/invoice-${process.pid}-${Date.now()}.pdf`,
+      mime: 'application/pdf'
+    },
+    sleepMs: 1
+  });
+  const runId = started.run_id;
+  await waitForCondition(
+    async () => {
+      const run = await api.readRun(runId);
+      if (!run) return false;
+      return run.timeline.some((step) => step.function_name === 'ocr-pages');
+    },
+    { timeoutMs: 30_000, intervalMs: 100, label: `ocr-pages step for ${runId}` }
+  );
+
+  await runDbosCliNoOutput('cancel', runId);
+  await waitForCondition(
+    async () => {
+      const run = await api.readRun(runId);
+      return !!run && run.dbos_status === 'CANCELLED';
+    },
+    { timeoutMs: 10_000, intervalMs: 100, label: `cancelled state for ${runId}` }
+  );
+
+  const beforeEffects = await client.query(
+    `SELECT COUNT(*)::int AS n
+     FROM side_effects
+     WHERE effect_key LIKE $1`,
+    [`${runId}|ocr-page|%`]
+  );
+  assert.equal(beforeEffects.rows[0].n >= 1, true);
+
+  const resumeRes = await fetch(`${api.baseUrl}/runs/${encodeURIComponent(runId)}/resume`, { method: 'POST' });
+  assert.equal(resumeRes.status, 202);
+  const done = await api.waitForRunTerminal(runId, 20_000);
+  assert.equal(done?.status, 'done');
+  assert.equal(done?.dbos_status, 'SUCCESS');
+  assert.equal(done.timeline.filter((step) => step.function_name === 'ocr-pages').length, 1);
+
+  const afterEffects = await client.query(
+    `SELECT COUNT(*)::int AS n, COUNT(DISTINCT effect_key)::int AS distinct_n
+     FROM side_effects
+     WHERE effect_key LIKE $1`,
+    [`${runId}|ocr-page|%`]
+  );
+  assert.equal(afterEffects.rows[0].n, beforeEffects.rows[0].n);
+  assert.equal(afterEffects.rows[0].n, afterEffects.rows[0].distinct_n);
+
+  const pages = await client.query(
+    `SELECT COUNT(*)::int AS n
+     FROM ocr_page
+     WHERE job_id = $1 AND status = 'ocr_ready'`,
+    [runId]
+  );
+  assert.equal(afterEffects.rows[0].n, pages.rows[0].n);
 });
 
 test('C4 determinism guard: default workflow body keeps nondeterminism out of workflow function', async () => {

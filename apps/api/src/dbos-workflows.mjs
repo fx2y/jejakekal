@@ -1231,15 +1231,23 @@ async function flakyRetryWorkflowImpl(input) {
 /**
  * @template T
  * @param {(input: T) => Promise<unknown>} workflowFn
- * @param {{workflowId?: string}} params
+ * @param {{workflowId?: string, timeoutMs?: number}} params
  * @param {T} input
  */
 async function startWorkflowWithConflictRecovery(workflowFn, params, input) {
+  /** @type {{workflowID?: string, timeoutMS?: number} | undefined} */
+  let startOptions;
+  if (params.workflowId || params.timeoutMs != null) {
+    startOptions = {};
+    if (params.workflowId) {
+      startOptions.workflowID = params.workflowId;
+    }
+    if (params.timeoutMs != null) {
+      startOptions.timeoutMS = Math.max(1, Number(params.timeoutMs));
+    }
+  }
   try {
-    return await DBOS.startWorkflow(
-      workflowFn,
-      params.workflowId ? { workflowID: params.workflowId } : undefined
-    )(input);
+    return await DBOS.startWorkflow(workflowFn, startOptions)(input);
   } catch (error) {
     if (params.workflowId && error instanceof DBOSWorkflowConflictError) {
       return DBOS.retrieveWorkflow(params.workflowId);
@@ -1259,7 +1267,7 @@ export function registerDbosWorkflows() {
 }
 
 /**
- * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, ocrPolicy?: Record<string, unknown>}} params
+ * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, ocrPolicy?: Record<string, unknown>, timeoutMs?: number}} params
  */
 export async function startDefaultWorkflowRun(params) {
   registerDbosWorkflows();
@@ -1281,7 +1289,7 @@ export async function startDefaultWorkflowRun(params) {
 }
 
 /**
- * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, ocrPolicy?: Record<string, unknown>}} params
+ * @param {{workflowId?: string, value: string, sleepMs?: number, bundlesRoot?: string, useLlm?: boolean, ocrPolicy?: Record<string, unknown>, timeoutMs?: number}} params
  */
 export async function startHardDocWorkflowRun(params) {
   registerDbosWorkflows();

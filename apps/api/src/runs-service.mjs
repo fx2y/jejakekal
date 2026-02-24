@@ -1,4 +1,4 @@
-import { startDefaultWorkflowRun } from './dbos-workflows.mjs';
+import { startDefaultWorkflowRun, startHardDocWorkflowRun } from './dbos-workflows.mjs';
 import { getRunProjection } from './runs-projections.mjs';
 import { sha256 } from '../../../packages/core/src/hash.mjs';
 import { badRequest, conflict } from './request-errors.mjs';
@@ -18,6 +18,8 @@ import {
 import { normalizeOcrPolicyInput, resolveOcrPolicy } from './ocr/config.mjs';
 
 const SOURCE_INTENT_SET = new Set(SOURCE_INTENTS);
+const HARDDOC_WORKFLOW_PREFIX = 'harddoc';
+const PDF_MIME = 'application/pdf';
 
 function normalizeOptionalString(value) {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -49,6 +51,46 @@ function makeInputHash(params) {
       args: params.args
     })
   );
+}
+
+/**
+ * @param {Record<string, unknown>} args
+ */
+function normalizeSourceArgs(args) {
+  const source = normalizeOptionalString(args.source);
+  const locator = normalizeOptionalString(args.locator);
+  const mime = normalizeOptionalString(args.mime)?.toLowerCase();
+  return { source, locator, mime };
+}
+
+/**
+ * @param {{intent:string,args:Record<string,unknown>}} params
+ */
+export function isHardDocRun(params) {
+  if (!SOURCE_INTENT_SET.has(params.intent)) return false;
+  const normalized = normalizeSourceArgs(params.args);
+  if (normalized.mime === PDF_MIME) return true;
+  const probe = `${normalized.source ?? ''} ${normalized.locator ?? ''}`;
+  return /\.pdf($|\?)/i.test(probe);
+}
+
+/**
+ * @param {{intent:string,args:Record<string,unknown>}} params
+ */
+export function deriveHardDocWorkflowId(params) {
+  const digest = sha256(JSON.stringify({ intent: params.intent, args: params.args }));
+  return `${HARDDOC_WORKFLOW_PREFIX}:${digest}`;
+}
+
+/**
+ * Keep OCR lane timeout deterministic from policy caps and bounded for fail-closed behavior.
+ * @param {{timeoutMs:number,maxPages:number}} ocrPolicy
+ */
+export function deriveHardDocTimeoutMs(ocrPolicy) {
+  const perPage = Math.max(1_000, Number(ocrPolicy.timeoutMs ?? 120_000));
+  const pageCap = Math.max(1, Number(ocrPolicy.maxPages ?? 1));
+  const timeout = Math.max(30_000, 90_000 + perPage * pageCap);
+  return Math.min(timeout, 3_600_000);
 }
 
 /**
@@ -128,6 +170,24 @@ function toWorkflowInput(command) {
 }
 
 /**
+ * @param {{
+ *   intent:string,
+ *   args:Record<string, unknown>,
+ *   workflowId?: string,
+ *   ocrPolicy: {timeoutMs:number,maxPages:number}
+ * }} params
+ */
+export function resolveWorkflowStartPlan(params) {
+  const hardDoc = isHardDocRun(params);
+  const workflowId = params.workflowId ?? (hardDoc ? deriveHardDocWorkflowId(params) : undefined);
+  return {
+    hardDoc,
+    workflowId,
+    timeoutMs: hardDoc ? deriveHardDocTimeoutMs(params.ocrPolicy) : undefined
+  };
+}
+
+/**
  * @param {{ocrPolicy?: Record<string, unknown>}} params
  */
 function resolveRunOcrPolicy(params) {
@@ -155,17 +215,25 @@ function resolveRunOcrPolicy(params) {
 export async function startRunDurably(client, params) {
   const workflowInput = toWorkflowInput(params);
   const ocrPolicy = resolveRunOcrPolicy(params);
-  if (params.workflowId) {
-    assertValidRunId(params.workflowId, 'workflowId');
-    await ensureWorkflowIdPayloadMatch(client, params.workflowId, makeInputHash(params));
-  }
-  const handle = await startDefaultWorkflowRun({
+  const startPlan = resolveWorkflowStartPlan({
+    intent: params.intent,
+    args: params.args,
     workflowId: params.workflowId,
+    ocrPolicy
+  });
+  if (startPlan.workflowId) {
+    assertValidRunId(startPlan.workflowId, 'workflowId');
+    await ensureWorkflowIdPayloadMatch(client, startPlan.workflowId, makeInputHash(params));
+  }
+  const startWorkflowRun = startPlan.hardDoc ? startHardDocWorkflowRun : startDefaultWorkflowRun;
+  const handle = await startWorkflowRun({
+    workflowId: startPlan.workflowId,
     value: workflowInput.value,
     sleepMs: params.sleepMs,
     useLlm: params.useLlm,
     bundlesRoot: params.bundlesRoot,
-    ocrPolicy
+    ocrPolicy,
+    timeoutMs: startPlan.timeoutMs
   });
   return { handle, runId: handle.workflowID };
 }

@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeRunStartPayload, startRunDurably } from '../src/runs-service.mjs';
+import {
+  deriveHardDocTimeoutMs,
+  deriveHardDocWorkflowId,
+  normalizeRunStartPayload,
+  resolveWorkflowStartPlan,
+  startRunDurably
+} from '../src/runs-service.mjs';
 import {
   ALLOW_SOURCE_COMPAT_UNTIL,
   JEJAKEKAL_COMPAT_TODAY,
@@ -58,6 +64,50 @@ test('runs-service: source compat path hard-fails after sunset', (t) => {
   });
   const telemetry = getSourceCompatTelemetry();
   assert.equal(telemetry.count, 0);
+});
+
+test('runs-service: source-intent args support additive locator/mime for hard-doc path', () => {
+  const normalized = normalizeRunStartPayload({
+    intent: 'doc',
+    args: {
+      locator: 's3://bucket/invoice.pdf',
+      mime: 'Application/PDF'
+    }
+  });
+  assert.equal(normalized.compat, false);
+  assert.deepEqual(normalized.args, {
+    locator: 's3://bucket/invoice.pdf',
+    mime: 'application/pdf'
+  });
+});
+
+test('runs-service: hard-doc start plan derives deterministic workflowId + timeout budget', () => {
+  const params = {
+    intent: 'doc',
+    args: {
+      locator: 's3://bucket/invoice.pdf',
+      mime: 'application/pdf'
+    },
+    ocrPolicy: {
+      timeoutMs: 2500,
+      maxPages: 8
+    }
+  };
+  const plan = resolveWorkflowStartPlan(params);
+  assert.equal(plan.hardDoc, true);
+  assert.equal(plan.workflowId, deriveHardDocWorkflowId(params));
+  assert.equal(plan.timeoutMs, deriveHardDocTimeoutMs(params.ocrPolicy));
+});
+
+test('runs-service: non-hard-doc plan keeps workflow defaults', () => {
+  const plan = resolveWorkflowStartPlan({
+    intent: 'doc',
+    args: { source: 'plain text source' },
+    ocrPolicy: { timeoutMs: 1000, maxPages: 1 }
+  });
+  assert.equal(plan.hardDoc, false);
+  assert.equal(plan.workflowId, undefined);
+  assert.equal(plan.timeoutMs, undefined);
 });
 
 test('runs-service: invalid OCR policy from client input fails typed 400', async () => {
