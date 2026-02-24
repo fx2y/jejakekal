@@ -1,7 +1,7 @@
 import { queryLexicalLaneRows, queryTableLaneRows, queryTrgmLaneRows, queryVectorLaneRows } from '../search/block-repository.mjs';
 import { RETRIEVAL_K_BUDGET } from './contracts.mjs';
 import { embedTextDeterministic } from './embeddings.mjs';
-import { fuseByReciprocalRank } from './fusion.mjs';
+import { exactRerankFusedCandidates, fuseByReciprocalRank } from './fusion.mjs';
 import { buildLexicalLanePlan } from './lanes/lexical.mjs';
 import { buildTableLanePlan } from './lanes/table.mjs';
 import { buildTrgmLanePlan } from './lanes/trgm.mjs';
@@ -24,17 +24,6 @@ function compareLexicalRows(a, b) {
  */
 function sortLexicalRows(rows) {
   return [...rows].sort(compareLexicalRows);
-}
-
-/**
- * @param {Array<{doc_id:string, ver:number, block_id:string, rank:number}>} rows
- */
-function mapLexicalByBlock(rows) {
-  const map = new Map();
-  for (const row of rows) {
-    map.set(`${row.doc_id}:${row.ver}:${row.block_id}`, row);
-  }
-  return map;
 }
 
 /**
@@ -122,24 +111,22 @@ export function createRetrievalService(deps) {
     const fused = fuseByReciprocalRank({
       laneResults,
       kRRF: RETRIEVAL_K_BUDGET.kRRF,
-      limit: lexicalPlan?.limit ?? trgmPlan?.limit
+      limit: Math.max(
+        lexicalPlan?.limit ?? 0,
+        trgmPlan?.limit ?? 0,
+        vectorPlan?.limit ?? 0,
+        tablePlan?.limit ?? 0,
+        RETRIEVAL_K_BUDGET.fused
+      )
     });
-    const lexicalByBlock = mapLexicalByBlock(lexicalRows);
-    const tableByBlock = mapLexicalByBlock(tableRows);
-    const trgmByBlock = mapLexicalByBlock(trgmRows);
-    const vectorByBlock = mapLexicalByBlock(vectorRows);
-    return fused.map((row) => {
-      const key = `${row.doc_id}:${row.ver}:${row.block_id}`;
-      const lexical = lexicalByBlock.get(key);
-      const table = tableByBlock.get(key);
-      const trgm = trgmByBlock.get(key);
-      const vector = vectorByBlock.get(key);
-      return {
-        doc_id: row.doc_id,
-        ver: row.ver,
-        block_id: row.block_id,
-        rank: lexical ? lexical.rank : table ? table.rank : trgm ? trgm.rank : vector ? vector.rank : row.score
-      };
+    return exactRerankFusedCandidates(fused, {
+      query: String(params.query ?? ''),
+      limit:
+        lexicalPlan?.limit ??
+        trgmPlan?.limit ??
+        vectorPlan?.limit ??
+        tablePlan?.limit ??
+        RETRIEVAL_K_BUDGET.final
     });
   }
 

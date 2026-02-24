@@ -12,7 +12,8 @@ import { sha256 } from './hash.mjs';
  * root: string,
  * artifact_refs?: unknown[],
  * step_summaries?: unknown[],
- * ingest?: unknown
+ * ingest?: unknown,
+ * retrieval?: unknown
  * }} RunManifest
  */
 
@@ -50,7 +51,7 @@ async function ensureEmptyDir(dir) {
 }
 
 /**
- * @param {{workflowId: string, root: string, schemaVersion?: string, createdAt?: string, artifactRefs?: unknown[], stepSummaries?: unknown[], ingest?: unknown}} opts
+ * @param {{workflowId: string, root: string, schemaVersion?: string, createdAt?: string, artifactRefs?: unknown[], stepSummaries?: unknown[], ingest?: unknown, retrieval?: unknown}} opts
  * @returns {RunManifest}
  */
 export function makeManifest(opts) {
@@ -67,7 +68,8 @@ export function makeManifest(opts) {
     root: opts.root,
     ...(Array.isArray(opts.artifactRefs) ? { artifact_refs: opts.artifactRefs } : {}),
     ...(Array.isArray(opts.stepSummaries) ? { step_summaries: opts.stepSummaries } : {}),
-    ...(opts.ingest != null ? { ingest: opts.ingest } : {})
+    ...(opts.ingest != null ? { ingest: opts.ingest } : {}),
+    ...(opts.retrieval != null ? { retrieval: opts.retrieval } : {})
   };
 }
 

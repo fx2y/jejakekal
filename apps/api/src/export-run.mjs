@@ -9,6 +9,7 @@ import { listArtifactsByRunId } from './artifacts/repository.mjs';
 import { assertFrozenArtifactType } from './contracts.mjs';
 import { buildIngestManifestSummary } from './export/ingest-summary.mjs';
 import { buildOcrBundleSidecars } from './export/ocr-sidecars.mjs';
+import { buildRetrievalBundleSidecars } from './export/retrieval-sidecars.mjs';
 
 function trimPreview(source) {
   return source.replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -139,6 +140,7 @@ export async function exportRunBundle(params) {
     uri: artifact.uri ?? null
   }));
   const ingestSummary = buildIngestManifestSummary(run.timeline);
+  const retrievalSidecars = buildRetrievalBundleSidecars(run.timeline);
   const manifest = makeManifest({
     workflowId: params.runId,
     root: '<run-bundle-root>',
@@ -148,7 +150,8 @@ export async function exportRunBundle(params) {
         : undefined,
     artifactRefs,
     stepSummaries,
-    ingest: ingestSummary
+    ingest: ingestSummary,
+    retrieval: retrievalSidecars?.retrieval_summary
   });
   const ocrSidecars = await buildOcrBundleSidecars(params.client, params.runId);
 
@@ -168,6 +171,7 @@ export async function exportRunBundle(params) {
         uri: artifact.uri ?? null,
         prov: artifact.prov ?? {}
       })),
+      ...(retrievalSidecars ? { 'retrieval_results.json': retrievalSidecars.retrieval_results } : {}),
       ...(ocrSidecars ? { 'ocr_pages.json': ocrSidecars.ocr_pages } : {})
     },
     extraTextFiles: {

@@ -25,6 +25,16 @@ function asRecord(value) {
 
 /**
  * @param {unknown} value
+ * @returns {number[]|null}
+ */
+function asNumberArray(value) {
+  if (!Array.isArray(value)) return null;
+  const out = value.map((entry) => Number(entry));
+  return out.every((entry) => Number.isFinite(entry)) ? out : null;
+}
+
+/**
+ * @param {unknown} value
  */
 function normalizeText(value) {
   const text = String(value ?? '').trim().toLowerCase();
@@ -617,7 +627,12 @@ export async function queryLexicalLaneRows(client, params) {
      SELECT b.doc_id,
             b.ver,
             b.block_id,
-            ts_rank_cd(f.vec, q.tsq) AS rank
+            ts_rank_cd(f.vec, q.tsq) AS rank,
+            b.type,
+            b.page,
+            b.bbox,
+            b.block_sha,
+            b.text
      FROM q
      JOIN doc_block b ON b.ns = ANY($3::text[])
      JOIN doc_block_fts f ON f.block_pk = b.id
@@ -630,7 +645,12 @@ export async function queryLexicalLaneRows(client, params) {
     doc_id: String(row.doc_id),
     ver: Number(row.ver),
     block_id: String(row.block_id),
-    rank: Number(row.rank)
+    rank: Number(row.rank),
+    type: typeof row.type === 'string' ? row.type : null,
+    page: row.page == null ? null : Number(row.page),
+    bbox: asNumberArray(row.bbox),
+    block_sha: typeof row.block_sha === 'string' ? row.block_sha : null,
+    text: typeof row.text === 'string' ? row.text : null
   }));
 }
 
@@ -668,6 +688,11 @@ export async function queryTrgmLaneRows(client, params) {
      SELECT b.doc_id,
             b.ver,
             b.block_id,
+            b.type,
+            b.page,
+            b.bbox,
+            b.block_sha,
+            b.text,
             GREATEST(
               similarity(COALESCE(b.title_norm, ''), q.txt),
               similarity(COALESCE(b.entity_norm, ''), q.txt),
@@ -690,7 +715,12 @@ export async function queryTrgmLaneRows(client, params) {
     doc_id: String(row.doc_id),
     ver: Number(row.ver),
     block_id: String(row.block_id),
-    rank: Number(row.rank)
+    rank: Number(row.rank),
+    type: typeof row.type === 'string' ? row.type : null,
+    page: row.page == null ? null : Number(row.page),
+    bbox: asNumberArray(row.bbox),
+    block_sha: typeof row.block_sha === 'string' ? row.block_sha : null,
+    text: typeof row.text === 'string' ? row.text : null
   }));
 }
 
@@ -826,10 +856,16 @@ export async function queryVectorLaneRows(client, params) {
      SELECT ann.doc_id,
             ann.ver,
             ann.block_id,
+            b.type,
+            b.page,
+            b.bbox,
+            b.block_sha,
+            b.text,
             1 - (v.emb <=> q.emb) AS rank,
             (v.emb <=> q.emb) AS distance
      FROM ann
      JOIN doc_block_vec v ON v.block_pk = ann.block_pk
+     JOIN doc_block b ON b.id = ann.block_pk
      JOIN q ON TRUE
      ORDER BY distance ASC, ann.block_pk ASC
      LIMIT $9`,
@@ -850,7 +886,12 @@ export async function queryVectorLaneRows(client, params) {
     ver: Number(row.ver),
     block_id: String(row.block_id),
     rank: Number(row.rank),
-    distance: Number(row.distance)
+    distance: Number(row.distance),
+    type: typeof row.type === 'string' ? row.type : null,
+    page: row.page == null ? null : Number(row.page),
+    bbox: asNumberArray(row.bbox),
+    block_sha: typeof row.block_sha === 'string' ? row.block_sha : null,
+    text: typeof row.text === 'string' ? row.text : null
   }));
 }
 
@@ -898,6 +939,7 @@ export async function queryTableCellLaneRows(client, params) {
             t.val_norm,
             t.val_num,
             t.unit,
+            t.text,
             t.cite,
             1.0::double precision AS rank,
             'exact'::text AS match_kind
@@ -926,6 +968,7 @@ export async function queryTableCellLaneRows(client, params) {
       val_norm: typeof row.val_norm === 'string' ? row.val_norm : null,
       val_num: typeof row.val_num === 'number' ? row.val_num : row.val_num == null ? null : Number(row.val_num),
       unit: typeof row.unit === 'string' ? row.unit : null,
+      text: typeof row.text === 'string' ? row.text : null,
       cite: asTableCellCite(row.cite),
       rank: Number(row.rank),
       match_kind: 'exact'
@@ -949,6 +992,7 @@ export async function queryTableCellLaneRows(client, params) {
             t.val_norm,
             t.val_num,
             t.unit,
+            t.text,
             t.cite,
             ts_rank_cd(t.vec, q.tsq) AS rank,
             'fts'::text AS match_kind
@@ -976,6 +1020,7 @@ export async function queryTableCellLaneRows(client, params) {
     val_norm: typeof row.val_norm === 'string' ? row.val_norm : null,
     val_num: typeof row.val_num === 'number' ? row.val_num : row.val_num == null ? null : Number(row.val_num),
     unit: typeof row.unit === 'string' ? row.unit : null,
+    text: typeof row.text === 'string' ? row.text : null,
     cite: asTableCellCite(row.cite),
     rank: Number(row.rank),
     match_kind: 'fts'
@@ -996,7 +1041,14 @@ export async function queryTableLaneRows(client, params) {
         doc_id: row.doc_id,
         ver: row.ver,
         block_id: row.block_id,
-        rank: row.rank
+        rank: row.rank,
+        type: 'table',
+        page: row.cite?.page == null ? null : Number(row.cite.page),
+        bbox: asNumberArray(row.cite?.bbox),
+        block_sha: typeof row.cite?.block_hash === 'string' ? row.cite.block_hash : null,
+        text: typeof row.text === 'string' ? row.text : null,
+        cite: row.cite,
+        match_kind: row.match_kind
       });
     }
   }

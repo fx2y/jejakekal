@@ -1177,6 +1177,12 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
     scope: { namespaces: ['default'] }
   });
   assert.equal(hits.length >= 1, true);
+  assert.equal(Array.isArray(hits[0].lane), true);
+  assert.equal(Array.isArray(hits[0].lane_reasons), true);
+  assert.equal(typeof hits[0].cite, 'object');
+  assert.equal(hits[0].cite.doc_version, hits[0].ver);
+  assert.equal(typeof hits[0].cite.block_hash, 'string');
+  assert.equal(Object.hasOwn(hits[0], 'text'), false);
   assert.equal(
     hits.every((row, index) => index === 0 || row.rank <= hits[index - 1].rank),
     true
@@ -1316,6 +1322,7 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
     scope: { namespaces: ['default'] }
   });
   assert.equal(vecHitsA.length >= 1, true);
+  assert.equal(vecHitsA.some((row) => row.lane.includes('vector')), true);
   assert.deepEqual(
     vecHitsA.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`),
     vecHitsB.map((row) => `${row.doc_id}:${row.ver}:${row.block_id}`)
