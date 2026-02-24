@@ -1,3 +1,7 @@
+CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS side_effects (
   effect_key TEXT PRIMARY KEY,
   response_json JSONB NOT NULL,
@@ -88,6 +92,73 @@ CREATE TABLE IF NOT EXISTS block (
 );
 
 CREATE INDEX IF NOT EXISTS block_tsv_gin ON block USING GIN (tsv);
+CREATE INDEX IF NOT EXISTS block_doc_ver_idx ON block (doc_id, ver, page, block_id);
+
+CREATE TABLE IF NOT EXISTS doc_block (
+  id BIGSERIAL PRIMARY KEY,
+  doc_id TEXT NOT NULL,
+  ver INTEGER NOT NULL CHECK (ver >= 1),
+  block_id TEXT NOT NULL,
+  ns TEXT NOT NULL DEFAULT 'default',
+  acl JSONB NOT NULL DEFAULT '{}'::jsonb,
+  type TEXT NOT NULL,
+  text TEXT,
+  data JSONB,
+  page INTEGER NOT NULL CHECK (page >= 1),
+  bbox JSONB,
+  block_sha TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (doc_id, ver, block_id),
+  FOREIGN KEY (doc_id, ver) REFERENCES doc_ver (doc_id, ver) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS doc_block_doc_ver_idx ON doc_block (doc_id, ver, page, block_id);
+CREATE INDEX IF NOT EXISTS doc_block_ns_idx ON doc_block (ns, doc_id, ver);
+
+CREATE TABLE IF NOT EXISTS doc_block_fts (
+  block_pk BIGINT PRIMARY KEY REFERENCES doc_block (id) ON DELETE CASCADE,
+  vec TSVECTOR NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS doc_block_fts_gin ON doc_block_fts USING GIN (vec);
+
+CREATE TABLE IF NOT EXISTS doc_block_vec (
+  block_pk BIGINT PRIMARY KEY REFERENCES doc_block (id) ON DELETE CASCADE,
+  emb VECTOR(1536),
+  model TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS doc_block_vec_hnsw
+  ON doc_block_vec
+  USING hnsw (emb vector_cosine_ops);
+
+CREATE TABLE IF NOT EXISTS table_cell (
+  id BIGSERIAL PRIMARY KEY,
+  doc_id TEXT NOT NULL,
+  ver INTEGER NOT NULL CHECK (ver >= 1),
+  table_id TEXT NOT NULL,
+  page INTEGER NOT NULL CHECK (page >= 1),
+  row_idx INTEGER NOT NULL CHECK (row_idx >= 0),
+  col_idx INTEGER NOT NULL CHECK (col_idx >= 0),
+  key_norm TEXT,
+  val_norm TEXT,
+  val_num DOUBLE PRECISION,
+  unit TEXT,
+  text TEXT,
+  vec TSVECTOR,
+  emb VECTOR(1536),
+  cite JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (doc_id, ver, table_id, row_idx, col_idx),
+  FOREIGN KEY (doc_id, ver) REFERENCES doc_ver (doc_id, ver) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS table_cell_doc_ver_idx ON table_cell (doc_id, ver, page, table_id, row_idx, col_idx);
+CREATE INDEX IF NOT EXISTS table_cell_vec_gin ON table_cell USING GIN (vec);
 
 CREATE TABLE IF NOT EXISTS ocr_job (
   job_id TEXT PRIMARY KEY,

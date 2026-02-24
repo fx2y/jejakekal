@@ -1106,8 +1106,15 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
   assert.equal(run.timeline.some((step) => step.function_name === 'normalize-docir'), true);
   assert.equal(run.timeline.some((step) => step.function_name === 'index-fts'), true);
 
-  const indexRes = await client.query(`SELECT to_regclass('public.block_tsv_gin') AS idx`);
-  assert.equal(indexRes.rows[0].idx, 'block_tsv_gin');
+  const indexRes = await client.query(
+    `SELECT
+       to_regclass('public.block_tsv_gin') AS block_idx,
+       to_regclass('public.doc_block_fts_gin') AS doc_block_idx,
+       to_regclass('public.table_cell_vec_gin') AS table_cell_idx`
+  );
+  assert.equal(indexRes.rows[0].block_idx, 'block_tsv_gin');
+  assert.equal(indexRes.rows[0].doc_block_idx, 'doc_block_fts_gin');
+  assert.equal(indexRes.rows[0].table_cell_idx, 'table_cell_vec_gin');
 
   const blockRows = await client.query(
     `SELECT doc_id, ver, block_id, block_sha, tsv
@@ -1118,6 +1125,21 @@ test('C4 fts correctness: block ledger persists and @@ ranked query is determini
   assert.equal(blockRows.rows.length >= 3, true);
   assert.equal(blockRows.rows.every((row) => typeof row.block_sha === 'string' && row.block_sha.length === 64), true);
   assert.equal(blockRows.rows.every((row) => row.tsv != null), true);
+
+  const docBlockRows = await client.query(
+    `SELECT b.block_id, b.block_sha, f.vec
+     FROM doc_block b
+     JOIN doc_block_fts f ON f.block_pk = b.id
+     WHERE b.doc_id = $1
+       AND b.ver = $2
+     ORDER BY b.block_id ASC`,
+    [blockRows.rows[0].doc_id, blockRows.rows[0].ver]
+  );
+  assert.equal(docBlockRows.rows.length, blockRows.rows.length);
+  assert.equal(
+    docBlockRows.rows.every((row) => typeof row.block_sha === 'string' && row.block_sha.length === 64 && row.vec != null),
+    true
+  );
 
   const hits = await queryRankedBlocksByTsQuery(client, {
     query: 'invoice',

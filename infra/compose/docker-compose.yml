@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:18.2
+    image: pgvector/pgvector:pg18
     container_name: jejakekal-postgres
     environment:
       POSTGRES_USER: postgres

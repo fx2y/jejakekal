@@ -31,7 +31,7 @@ export async function applySchema(client) {
 export async function resetAppTables(client) {
   await applySchema(client);
   await client.query(
-    'TRUNCATE side_effects, workflow_input_claims, artifact, chat_event, docir_page_diff, ocr_page, ocr_patch, ocr_job, docir_page_version, block, doc_ver, doc RESTART IDENTITY CASCADE'
+    'TRUNCATE side_effects, workflow_input_claims, artifact, chat_event, docir_page_diff, ocr_page, ocr_patch, ocr_job, docir_page_version, table_cell, doc_block_vec, doc_block_fts, doc_block, block, doc_ver, doc RESTART IDENTITY CASCADE'
   );
 }
 

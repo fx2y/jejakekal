@@ -8,5 +8,12 @@ if [[ "$code" != "200" && "$code" != "403" ]]; then
 fi
 mise x node@24.13.1 -- node scripts/smoke-s3-head.mjs
 mise run test:pipeline:smoke
-mise run psql -- -tAc "select case when to_regclass('public.block_tsv_gin') is null then 0 else 1 end" | grep -qx '1'
+mise run psql -- -tAc "select case when exists (select 1 from pg_extension where extname='unaccent') then 1 else 0 end" | grep -qx '1'
+mise run psql -- -tAc "select case when exists (select 1 from pg_extension where extname='pg_trgm') then 1 else 0 end" | grep -qx '1'
+mise run psql -- -tAc "select case when exists (select 1 from pg_extension where extname='vector') then 1 else 0 end" | grep -qx '1'
+mise run psql -- -tAc "select case when to_regclass('public.doc_block_fts_gin') is null then 0 else 1 end" | grep -qx '1'
+mise run psql -- -tAc "select case when to_regclass('public.table_cell_vec_gin') is null then 0 else 1 end" | grep -qx '1'
+if [[ "${RETR_LANE_VEC:-0}" == "1" ]]; then
+  mise run psql -- -tAc "select case when to_regclass('public.doc_block_vec_hnsw') is null then 0 else 1 end" | grep -qx '1'
+fi
 date +%s > .cache/smoke-ingest.stamp
