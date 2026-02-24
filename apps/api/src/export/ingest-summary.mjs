@@ -53,6 +53,24 @@ function intListField(row, key) {
 }
 
 /**
+ * @param {Record<string, unknown> | null} row
+ */
+function ocrPagesFromOutput(row) {
+  if (!Array.isArray(row?.ocr_pages)) return [];
+  return [
+    ...new Set(
+      row.ocr_pages
+        .map((item) =>
+          item && typeof item === 'object' && !Array.isArray(item)
+            ? Number(/** @type {Record<string, unknown>} */ (item).page_idx)
+            : NaN
+        )
+        .filter((value) => Number.isInteger(value) && value >= 0)
+    )
+  ].sort((a, b) => a - b);
+}
+
+/**
  * @param {Array<{function_name?:string,output?:unknown}>} timeline
  */
 export function buildIngestManifestSummary(timeline) {
@@ -94,15 +112,9 @@ export function buildIngestManifestSummary(timeline) {
     stderr_ref: stringField(storeParse, 'marker_stderr_sha'),
     ocr: {
       hard_pages: intListField(ocrGate, 'hard_pages'),
-      ocr_pages: Array.isArray(ocrPages?.ocr_pages)
-        ? ocrPages.ocr_pages
-            .map((row) =>
-              row && typeof row === 'object' && !Array.isArray(row)
-                ? Number(/** @type {Record<string, unknown>} */ (row).page_idx)
-                : NaN
-            )
-            .filter((value) => Number.isInteger(value) && value >= 0)
-        : [],
+      ocr_pages: ocrPagesFromOutput(ocrPages),
+      ocr_failures: numberField(ocrPages, 'ocr_failures'),
+      ocr_model: stringField(ocrPages, 'ocr_model'),
       diff_sha: stringField(ocrMerge, 'diff_sha')
     }
   };

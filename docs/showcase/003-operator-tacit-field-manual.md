@@ -132,6 +132,19 @@ mise run dbos:workflow:steps -- "$RID" | jq 'map({functionID,name})'
 ```
 Must hold: API timeline == DBOS step order; no shadow truth source needed.
 
+### 6.1 OCR SQL kit (deterministic introspection)
+```bash
+RID=$R3
+mise run psql -- -c "select function_id,function_name,output,error from dbos.operation_outputs where workflow_uuid='${RID}' and function_name like 'ocr-%' order by function_id asc;"
+mise run psql -- -c "select job_id,doc_id,ver,gate_rev,policy,created_at from ocr_job where job_id='${RID}';"
+mise run psql -- -c "select page_idx,status,gate_score,jsonb_array_length(gate_reasons) gate_reason_count,png_sha,raw_sha from ocr_page where job_id='${RID}' order by page_idx asc;"
+mise run psql -- -c "select source_job_id,page_idx,changed_blocks,page_diff_sha,diff_sha from docir_page_diff where source_job_id='${RID}' order by page_idx asc,created_at desc;"
+mise run psql -- -c "select function_name,coalesce((output->>'ocr_failures')::int,0) ocr_failures,output->>'ocr_model' ocr_model from dbos.operation_outputs where workflow_uuid='${RID}' and function_name='ocr-pages';"
+```
+Must hold:
+- `ocr_job/ocr_page/docir_page_diff` rows are persisted truth for gate/page/diff lineage.
+- `dbos.operation_outputs` exposes OCR step outputs for replay diagnostics (`ocr_failures`,`ocr_model`).
+
 ## 7) Chat Ledger Invariant
 ```bash
 mise run psql -- -c "select cmd,args,run_id from chat_event order by created_at desc limit 5;"

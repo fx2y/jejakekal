@@ -17,7 +17,7 @@ function assertRunStatusState(state) {
  *   run_id: string,
  *   status: string,
  *   dbos_status?: string | null,
- *   timeline?: Array<{function_id:number,function_name:string,error?:unknown,started_at_epoch_ms?:number|null,completed_at_epoch_ms?:number|null,duration_ms?:number|null,attempt?:number|null,io_hashes?:string[],cost?:number|null}>,
+ *   timeline?: Array<{function_id:number,function_name:string,error?:unknown,output?:unknown,started_at_epoch_ms?:number|null,completed_at_epoch_ms?:number|null,duration_ms?:number|null,attempt?:number|null,io_hashes?:string[],cost?:number|null}>,
  *   artifacts?: Array<Record<string, unknown>>
  * }} RunProjection
  */
@@ -43,6 +43,22 @@ function asRecord(value) {
     return /** @type {Record<string, unknown>} */ (value);
   }
   return {};
+}
+
+/**
+ * @param {unknown} value
+ */
+function asInt(value) {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.trunc(parsed));
+}
+
+/**
+ * @param {unknown} value
+ */
+function asText(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 /**
@@ -84,6 +100,35 @@ export function execRows(run) {
           .filter((value) => typeof value === 'string')
           .map((value) => String(value))
       : [];
+    const output = asRecord(row.output);
+    const hardPages = Array.isArray(output.hard_pages)
+      ? output.hard_pages
+          .map((value) => asInt(value))
+          .filter((value) => value != null)
+      : [];
+    const gateReasonCount = (() => {
+      const reasons = asRecord(output.reasons);
+      let total = 0;
+      for (const value of Object.values(reasons)) {
+        if (Array.isArray(value)) total += value.length;
+      }
+      return total;
+    })();
+    const ocrPages = Array.isArray(output.ocr_pages)
+      ? [
+          ...new Set(
+            output.ocr_pages
+              .map((value) =>
+                value && typeof value === 'object' && !Array.isArray(value)
+                  ? asInt(/** @type {Record<string, unknown>} */ (value).page_idx)
+                  : null
+              )
+              .filter((value) => value != null)
+          )
+        ]
+      : [];
+    const ocrFailures = asInt(output.ocr_failures);
+    const ocrModel = asText(output.ocr_model);
     return {
       function_id: row.function_id,
       function_name: row.function_name,
@@ -91,7 +136,12 @@ export function execRows(run) {
       duration_ms: durationMs,
       attempt,
       io_hash_count: ioHashes.length,
-      cost: row.cost ?? null
+      cost: row.cost ?? null,
+      hard_page_count: hardPages.length,
+      gate_reason_count: gateReasonCount,
+      ocr_page_count: ocrPages.length,
+      ocr_failures: ocrFailures,
+      ocr_model: ocrModel
     };
   });
 }

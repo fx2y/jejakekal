@@ -63,7 +63,14 @@ export function renderExecutionPane(run, filters, opts = {}) {
       (row) => {
         const focused = typeof filters.step === 'number' && filters.step === row.function_id;
         const cost = row.cost == null ? 'n/a' : String(row.cost);
-        return `<li data-function-id="${row.function_id}"${focused ? ' class="step-focus"' : ''}>${row.function_id}:${uiEsc.escapeHtml(row.function_name)}:${row.phase}:attempt=${row.attempt}:duration=${row.duration_ms == null ? 'n/a' : `${row.duration_ms}ms`}:io_hashes=${row.io_hash_count}:cost=${uiEsc.escapeHtml(cost)}</li>`;
+        const ocrMeta = [];
+        if (row.hard_page_count > 0) ocrMeta.push(`hard_pages=${row.hard_page_count}`);
+        if (row.gate_reason_count > 0) ocrMeta.push(`gate_reason_count=${row.gate_reason_count}`);
+        if (row.ocr_page_count > 0) ocrMeta.push(`ocr_pages=${row.ocr_page_count}`);
+        if (row.ocr_failures != null) ocrMeta.push(`ocr_failures=${row.ocr_failures}`);
+        if (row.ocr_model) ocrMeta.push(`ocr_model=${row.ocr_model}`);
+        const ocrSuffix = ocrMeta.length > 0 ? `:${uiEsc.escapeHtml(ocrMeta.join(':'))}` : '';
+        return `<li data-function-id="${row.function_id}"${focused ? ' class="step-focus"' : ''}>${row.function_id}:${uiEsc.escapeHtml(row.function_name)}:${row.phase}:attempt=${row.attempt}:duration=${row.duration_ms == null ? 'n/a' : `${row.duration_ms}ms`}:io_hashes=${row.io_hash_count}:cost=${uiEsc.escapeHtml(cost)}${ocrSuffix}</li>`;
       }
     )
     .join('');

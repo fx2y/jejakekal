@@ -981,6 +981,12 @@ test('C5 bundle manifest adds ingest summary fields additively', async (t) => {
   assert.equal(typeof manifest.ingest.counts, 'object');
   assert.equal(typeof manifest.ingest.timing_ms, 'object');
   assert.equal(typeof manifest.ingest.stderr_ref, 'string');
+  assert.equal(typeof manifest.ingest.ocr, 'object');
+  assert.ok(Array.isArray(manifest.ingest.ocr.hard_pages));
+  assert.ok(Array.isArray(manifest.ingest.ocr.ocr_pages));
+  assert.equal('ocr_failures' in manifest.ingest.ocr, true);
+  assert.equal('ocr_model' in manifest.ingest.ocr, true);
+  assert.equal('diff_sha' in manifest.ingest.ocr, true);
   assert.ok(Array.isArray(manifest.artifact_refs));
   assert.ok(Array.isArray(manifest.step_summaries));
 });

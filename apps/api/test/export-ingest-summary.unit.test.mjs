@@ -41,7 +41,9 @@ test('ingest summary builder maps workflow step outputs additively', () => {
     {
       function_name: 'ocr-pages',
       output: {
-        ocr_pages: [{ page_idx: 2 }]
+        ocr_pages: [{ page_idx: 2 }, { page_idx: 2 }],
+        ocr_failures: 1,
+        ocr_model: 'zai-org/GLM-OCR'
       }
     },
     {
@@ -63,5 +65,7 @@ test('ingest summary builder maps workflow step outputs additively', () => {
   assert.equal(summary.stderr_ref, 'c'.repeat(64));
   assert.deepEqual(summary.ocr.hard_pages, [0, 2]);
   assert.deepEqual(summary.ocr.ocr_pages, [2]);
+  assert.equal(summary.ocr.ocr_failures, 1);
+  assert.equal(summary.ocr.ocr_model, 'zai-org/GLM-OCR');
   assert.equal(summary.ocr.diff_sha, 'd'.repeat(64));
 });

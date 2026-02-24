@@ -860,14 +860,20 @@ async function runS6RenderStoreOcrPages(input) {
 async function persistOcrPagesStep(input) {
   const ocrEnabled = input.ocrPolicy?.enabled !== false;
   if (!ocrEnabled) {
-    return { ocr_pages: [], skipped: 'ocr_disabled' };
+    return { ocr_pages: [], ocr_failures: 0, ocr_model: null, skipped: 'ocr_disabled' };
   }
   const store = getS3BlobStore();
+  const ocrModel =
+    typeof input.ocrPolicy?.model === 'string' && input.ocrPolicy.model.trim().length > 0
+      ? input.ocrPolicy.model.trim()
+      : null;
   /** @type {Array<{page_idx:number,raw_uri:string,raw_sha:string,patch_sha:string,patch:Record<string, unknown>,effect_replayed:boolean}>} */
   const persisted = [];
+  let invalidRenderedRows = 0;
 
   for (const page of input.renderedPages ?? []) {
     if (typeof page.png_uri !== 'string' || typeof page.png_sha !== 'string') {
+      invalidRenderedRows += 1;
       continue;
     }
     const effectKey = buildOcrPageEffectKey({
@@ -982,7 +988,11 @@ async function persistOcrPagesStep(input) {
         });
       }
       await client.query('COMMIT');
-      return { ocr_pages: pages };
+      return {
+        ocr_pages: pages,
+        ocr_failures: invalidRenderedRows,
+        ocr_model: ocrModel
+      };
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
