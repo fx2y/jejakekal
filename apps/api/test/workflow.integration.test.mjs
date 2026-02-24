@@ -1013,6 +1013,14 @@ test('C5 bundle manifest adds ingest summary fields additively', async (t) => {
   assert.equal(exportRes.status, 200);
   const exported = await exportRes.json();
   assert.equal(typeof exported.run_bundle_path, 'string');
+  assert.equal(typeof exported.ingest, 'object');
+  assert.equal(typeof exported.ingest.doc_id, 'string');
+  assert.equal(typeof exported.ingest.ocr, 'object');
+  assert.ok(Array.isArray(exported.ingest.ocr.hard_pages));
+  assert.ok(Array.isArray(exported.ingest.ocr.ocr_pages));
+  assert.equal('ocr_failures' in exported.ingest.ocr, true);
+  assert.equal('ocr_model' in exported.ingest.ocr, true);
+  assert.equal('diff_sha' in exported.ingest.ocr, true);
   const bundle = await readBundle(exported.run_bundle_path);
   const manifest = bundle['manifest.json'];
   assert.equal(manifest.workflowId, started.run_id);
@@ -1032,6 +1040,49 @@ test('C5 bundle manifest adds ingest summary fields additively', async (t) => {
   assert.equal('diff_sha' in manifest.ingest.ocr, true);
   assert.ok(Array.isArray(manifest.artifact_refs));
   assert.ok(Array.isArray(manifest.step_summaries));
+});
+
+test('C6 OCR sidecars always include diff_summary.md even when merge diff is empty', async (t) => {
+  const client = await setupDbOrSkip(t);
+  if (!client) return;
+  const api = await startApiServer(0);
+  t.after(async () => {
+    await api.close();
+  });
+
+  const baseUrl = `http://127.0.0.1:${api.port}`;
+  const startRes = await fetch(`${baseUrl}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      intent: 'doc',
+      args: {
+        source: ['scan', 'table|x', `nonce:${process.pid}-${Date.now()}`].join('\n'),
+        mime: 'application/pdf'
+      },
+      ocrPolicy: {
+        enabled: false,
+        engine: 'vllm',
+        model: 'zai-org/GLM-OCR',
+        baseUrl: 'http://127.0.0.1:8000',
+        timeoutMs: 120000,
+        maxPages: 10
+      },
+      sleepMs: 10
+    })
+  });
+  assert.equal(startRes.status, 202);
+  const started = await startRes.json();
+  const run = await waitForRunTerminal(baseUrl, started.run_id);
+  assert.equal(run?.status, 'done');
+
+  const exportRes = await fetch(`${baseUrl}/runs/${encodeURIComponent(started.run_id)}/export`);
+  assert.equal(exportRes.status, 200);
+  const exported = await exportRes.json();
+  const diffMd = await readFile(join(exported.run_bundle_path, 'diff_summary.md'), 'utf8');
+  assert.equal(diffMd.includes('# OCR diff summary'), true);
+  assert.equal(diffMd.includes('- diff_sha: none'), true);
+  assert.equal(diffMd.includes('- none'), true);
 });
 
 test('C4 fts correctness: block ledger persists and @@ ranked query is deterministic', async (t) => {

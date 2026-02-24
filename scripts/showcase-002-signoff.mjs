@@ -337,6 +337,15 @@ async function main() {
   let ocrMock = null;
   let ocrBaseUrl = '';
 
+  /**
+   * Execute stack task wrappers directly so paired filer override env is honored
+   * even when `.mise.toml` sets default env values.
+   * @param {'up'|'down'|'reset'} task
+   */
+  async function runStackTask(task) {
+    return runCommand('bash', [`mise-tasks/stack/${task}`], { env: stackEnv });
+  }
+
   const addStep = (step) => {
     summary.steps.push(step);
     if (step.ok === false) {
@@ -376,16 +385,16 @@ async function main() {
     });
 
     await step('setup.up', async () => {
-      const result = await runCommand('mise', ['run', 'up'], { env: stackEnv });
-      assert(result.ok, `mise run up failed: ${result.stderr || result.stdout}`);
-      return { command: 'mise run up', duration_ms: result.duration_ms };
+      const result = await runStackTask('up');
+      assert(result.ok, `stack up failed: ${result.stderr || result.stdout}`);
+      return { command: 'bash mise-tasks/stack/up', duration_ms: result.duration_ms };
     });
 
     await step('setup.reset', async () => {
-      const reset = await runCommand('mise', ['run', 'reset'], { env: stackEnv });
+      const reset = await runStackTask('reset');
       if (reset.ok) {
         return {
-          command: 'mise run reset',
+          command: 'bash mise-tasks/stack/reset',
           duration_ms: reset.duration_ms
         };
       }
@@ -393,17 +402,17 @@ async function main() {
       const needsRecovery =
         reset.stderr.includes('is being accessed by other users') ||
         reset.stdout.includes('is being accessed by other users');
-      assert(needsRecovery, `mise run reset failed: ${reset.stderr || reset.stdout}`);
+      assert(needsRecovery, `stack reset failed: ${reset.stderr || reset.stdout}`);
 
-      const down = await runCommand('mise', ['run', 'down'], { env: stackEnv });
-      assert(down.ok, `mise run down recovery failed: ${down.stderr || down.stdout}`);
-      const up = await runCommand('mise', ['run', 'up'], { env: stackEnv });
-      assert(up.ok, `mise run up recovery failed: ${up.stderr || up.stdout}`);
-      const retry = await runCommand('mise', ['run', 'reset'], { env: stackEnv });
-      assert(retry.ok, `mise run reset retry failed: ${retry.stderr || retry.stdout}`);
+      const down = await runStackTask('down');
+      assert(down.ok, `stack down recovery failed: ${down.stderr || down.stdout}`);
+      const up = await runStackTask('up');
+      assert(up.ok, `stack up recovery failed: ${up.stderr || up.stdout}`);
+      const retry = await runStackTask('reset');
+      assert(retry.ok, `stack reset retry failed: ${retry.stderr || retry.stdout}`);
       return {
-        command: 'mise run reset',
-        recovered_via: ['mise run down', 'mise run up', 'mise run reset'],
+        command: 'bash mise-tasks/stack/reset',
+        recovered_via: ['bash mise-tasks/stack/down', 'bash mise-tasks/stack/up', 'bash mise-tasks/stack/reset'],
         duration_ms: reset.duration_ms + down.duration_ms + up.duration_ms + retry.duration_ms
       };
     });

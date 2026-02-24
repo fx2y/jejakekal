@@ -138,6 +138,7 @@ export async function exportRunBundle(params) {
     sha256: artifact.sha256 ?? null,
     uri: artifact.uri ?? null
   }));
+  const ingestSummary = buildIngestManifestSummary(run.timeline);
   const manifest = makeManifest({
     workflowId: params.runId,
     root: '<run-bundle-root>',
@@ -147,7 +148,7 @@ export async function exportRunBundle(params) {
         : undefined,
     artifactRefs,
     stepSummaries,
-    ingest: buildIngestManifestSummary(run.timeline)
+    ingest: ingestSummary
   });
   const ocrSidecars = await buildOcrBundleSidecars(params.client, params.runId);
 
@@ -182,6 +183,7 @@ export async function exportRunBundle(params) {
     header: run.header,
     timeline: run.timeline,
     artifacts,
+    ingest: ingestSummary,
     run_bundle_path: bundleDir
   };
 }

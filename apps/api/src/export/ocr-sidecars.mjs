@@ -21,6 +21,13 @@ function buildDiffSummaryMarkdown(input) {
 }
 
 /**
+ * @param {string} runId
+ */
+function buildNoDiffSummaryMarkdown(runId) {
+  return ['# OCR diff summary', `- job_id: ${runId}`, '- diff_sha: none', '## Pages', '- none'].join('\n') + '\n';
+}
+
+/**
  * @param {{source_job_id:string,hardPages:number[],ocrPages:number[],diffSha:string|null}} input
  */
 function buildOcrReportMarkdown(input) {
@@ -90,7 +97,7 @@ export async function buildOcrBundleSidecars(client, runId) {
           diff_sha: diffSha,
           rows: diffRows
         })
-      : null,
+      : buildNoDiffSummaryMarkdown(runId),
     diff_sha: diffSha
   };
 }
